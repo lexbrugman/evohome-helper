@@ -19,10 +19,10 @@ def _client():
 
         # we need to retain the logger class since yahoo_oauth kindly overwrites it globally
         logger_class = logging.getLoggerClass()
-        from yahoo_oauth import OAuth1 as YOAuth1
+        from yahoo_oauth import OAuth2 as YOAuth2
         logging.setLoggerClass(logger_class)
 
-        client = YOAuth1(
+        client = YOAuth2(
             None,
             None,
             from_file=secrets_filename,
@@ -58,10 +58,11 @@ def _query(query):
     query_data = {
         "q": query,
         "format": "json",
+        "diagnostics": "false",
     }
 
     qs = url_parse.urlencode(query_data)
-    url = "https://query.yahooapis.com/v1/public/yql?{}".format(qs)
+    url = "https://query.yahooapis.com/v1/yql?{}".format(qs)
 
     response = None
     try:
