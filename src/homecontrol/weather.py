@@ -7,36 +7,39 @@ from homecontrol import settings
 
 logger = logging.getLogger(__name__)
 
-client = None
-
 
 def _client():
-    global client
+    secrets_filename = "yahoo_secrets.json"
 
-    if not client:
-        secrets_filename = "yahoo_secrets.json"
-        _update_secrets(secrets_filename)
+    _update_secrets(secrets_filename)
 
-        # we need to retain the logger class since yahoo_oauth kindly overwrites it globally
-        logger_class = logging.getLoggerClass()
-        from yahoo_oauth import OAuth2 as YOAuth2
-        logging.setLoggerClass(logger_class)
+    # we need to retain the logger class since yahoo_oauth kindly overwrites it globally
+    logger_class = logging.getLoggerClass()
+    from yahoo_oauth import OAuth2 as YOAuth2
+    logging.setLoggerClass(logger_class)
 
-        client = YOAuth2(
-            None,
-            None,
-            from_file=secrets_filename,
-        )
-        client.refresh_access_token()
-
-    return client
+    return YOAuth2(
+        None,
+        None,
+        from_file=secrets_filename,
+    )
 
 
 def _update_secrets(filename):
     secrets = _read_data(filename)
-    secrets["consumer_key"] = settings.YAHOO_CLIENT_ID
-    secrets["consumer_secret"] = settings.YAHOO_CLIENT_SECRET
-    _write_data(filename, secrets)
+
+    secrets_changed = False
+
+    if secrets.get("consumer_key") != settings.YAHOO_CLIENT_ID:
+        secrets["consumer_key"] = settings.YAHOO_CLIENT_ID
+        secrets_changed = True
+
+    if secrets.get("consumer_secret") != settings.YAHOO_CLIENT_SECRET:
+        secrets["consumer_secret"] = settings.YAHOO_CLIENT_SECRET
+        secrets_changed = True
+
+    if secrets_changed:
+        _write_data(filename, secrets)
 
 
 def _read_data(filename):
@@ -66,12 +69,7 @@ def _query(query):
 
     response = None
     try:
-        yahoo_client = _client()
-
-        if not client.token_is_valid():
-            client.refresh_access_token()
-
-        response = yahoo_client.session.get(url)
+        response = _client().session.get(url)
         response.raise_for_status()
     except:
         if response:
