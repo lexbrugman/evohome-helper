@@ -1,9 +1,12 @@
+#!/usr/bin/env python
+
 import logging
 import time
 
-logging.basicConfig(format="%(asctime)s - %(name)s(%(threadName)s) - %(levelname)s - %(message)s")
+from logging import config as log_config
+
+log_config.fileConfig("logging.conf")
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
 
 
 def set_thermostat_mode():
@@ -39,8 +42,8 @@ def set_thermostat_mode():
 
 
 if __name__ == "__main__":
-    import evohome
-    import unifi
+    from homecontrol import evohome
+    from homecontrol import unifi
 
     while True:
         try:

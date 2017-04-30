@@ -1,11 +1,12 @@
 import logging
-from netaddr import IPAddress, IPNetwork
+
+from netaddr import IPAddress
+from netaddr import IPNetwork
 from pyunifi.controller import Controller as BaseUnifiClient
 
-import settings
+from homecontrol import settings
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
 
 
 class UnifiClient(BaseUnifiClient):

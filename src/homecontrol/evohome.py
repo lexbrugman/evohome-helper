@@ -1,14 +1,14 @@
 import inspect
 import logging
-from datetime import datetime
-from time import sleep
-from evohomeclient2 import EvohomeClient as BaseEvohomeClient
 
-import settings
-import weather
+from datetime import datetime
+from evohomeclient2 import EvohomeClient as BaseEvohomeClient
+from time import sleep
+
+from homecontrol import settings
+from homecontrol import weather
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
 
 
 class ThermostatStatuses:
