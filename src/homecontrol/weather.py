@@ -83,17 +83,19 @@ def _query(query):
     return response.json()
 
 
-def get_today_high_temperature(location):
+def get_temperature_info(location):
     data = _query("""
-        select item.forecast
+        select item.forecast, item.condition
         from weather.forecast
         where woeid in (select woeid from geo.places(1) where text='{}') and u='c'
         | sort(field="item.forecast.date")
         | truncate(count=1)
     """.format(location))
 
-    temperature = -99
+    high_temperature = -99
+    current_temperature = -99
     if data:
-        temperature = data["query"]["results"]["channel"]["item"]["forecast"]["high"]
+        high_temperature = float(data["query"]["results"]["channel"]["item"]["forecast"]["high"])
+        current_temperature = float(data["query"]["results"]["channel"]["item"]["condition"]["temp"])
 
-    return int(temperature)
+    return round(high_temperature, 1), round(current_temperature, 1)
