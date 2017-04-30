@@ -1,4 +1,5 @@
 .idea/
 .venv/
 *.pyc
-src/settings.py
+src/yahoo_secrets.json
+src/homecontrol/settings.py
