@@ -148,8 +148,7 @@ def get_zones(location=None):
     for gateway in location.gateways.values():
         for control_system in gateway.control_systems.values():
             for zone in control_system.zones.values():
-                temperature_status = zone.temperatureStatus
-                if not temperature_status["isAvailable"]:
+                if zone.activeFaults:
                     continue
 
                 yield zone
