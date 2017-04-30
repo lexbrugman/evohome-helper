@@ -17,9 +17,6 @@ def set_thermostat_mode():
         temperature_status = zone.temperatureStatus
         setpoint_status = zone.heatSetpointStatus
 
-        if not temperature_status["isAvailable"]:
-            continue
-
         logger.info(
             "%s: %s/%s (%s)",
             zone.name,

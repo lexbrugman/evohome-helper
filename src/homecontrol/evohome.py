@@ -74,11 +74,16 @@ def is_in_schedule_grace_period(location=None):
 
     zones = get_zones(location)
     for zone in zones:
-        last_switch_point = _get_current_zone_switch_point_from_schedule(zone)
-        logger.debug("last scheduled switch point for %s was at: %s", zone.name, last_switch_point)
+        switch_point, switch_point_temperature = _get_current_zone_switch_point_from_schedule(zone)
+        logger.debug(
+            "last scheduled switch point for %s was at: %s (%s degrees celsius)",
+            zone.name,
+            switch_point,
+            switch_point_temperature
+        )
 
-        since_last_switch_points = now - last_switch_point
-        if since_last_switch_points.total_seconds() < settings.EVOHOME_SCHEDULE_GRACE_TIME:
+        since_switch_point = now - switch_point
+        if since_switch_point.total_seconds() < settings.EVOHOME_SCHEDULE_GRACE_TIME:
             return True
 
     return False
@@ -112,6 +117,7 @@ def _get_current_zone_switch_point_from_schedule(zone):
         "DayOfWeek": 6,
         "TimeOfDay": "00:00:00",
     })
+    last_switch_point_temperature = -99
 
     now = get_current_time()
 
@@ -130,8 +136,9 @@ def _get_current_zone_switch_point_from_schedule(zone):
                 continue
 
             last_switch_point = switch_point
+            last_switch_point_temperature = zone_switch_point["TargetTemperature"]
 
-    return last_switch_point
+    return last_switch_point, last_switch_point_temperature
 
 
 def get_zones(location=None):
@@ -141,6 +148,10 @@ def get_zones(location=None):
     for gateway in location.gateways.values():
         for control_system in gateway.control_systems.values():
             for zone in control_system.zones.values():
+                temperature_status = zone.temperatureStatus
+                if not temperature_status["isAvailable"]:
+                    continue
+
                 yield zone
 
 
@@ -157,16 +168,46 @@ def _is_override_enabled(control_system):
     return False
 
 
-def _is_heating_needed_today(location=None):
+def _is_heating_needed(location=None):
     if not location:
         location = get_location()
 
     location_string = "{}, {}".format(location.city, location.country)
-    temperature = weather.get_today_high_temperature(location_string)
+    outside_high_temperature, outside_current_temperature = weather.get_temperature_info(location_string)
 
-    logger.debug("today's high temperature forecast is %s degrees celsius for '%s'", temperature, location_string)
+    logger.debug(
+        "current outside (%s) temperature: %s degrees celsius (today high = %s)",
+        location_string,
+        outside_current_temperature,
+        outside_high_temperature,
+    )
 
-    return temperature < settings.EVOHOME_HEATING_ECO_TEMPERATURE
+    # is it a warm day?
+    if outside_high_temperature < settings.EVOHOME_HEATING_ECO_TEMPERATURE:
+        return True
+
+    highest_set_point_temp = _get_highest_set_point_temp(location)
+
+    # all zones are off?
+    if highest_set_point_temp <= settings.EVOHOME_SCHEDULE_OFF_TEMP:
+        return True
+
+    temperature_offset = float(settings.EVOHOME_HEATING_ECO_TEMPERATURE_OFFSET)
+
+    return outside_current_temperature + temperature_offset < highest_set_point_temp
+
+
+def _get_highest_set_point_temp(location=None):
+    highest_set_point_temperature = -99
+
+    zones = get_zones(location)
+    for zone in zones:
+        switch_point, set_point_temperature = _get_current_zone_switch_point_from_schedule(zone)
+
+        if set_point_temperature > highest_set_point_temperature:
+            highest_set_point_temperature = set_point_temperature
+
+    return highest_set_point_temperature
 
 
 def _set_mode(new_mode, location=None):
@@ -188,7 +229,7 @@ def _set_mode(new_mode, location=None):
 
 
 def set_normal(location=None):
-    if _is_heating_needed_today(location):
+    if _is_heating_needed(location):
         _set_mode(ThermostatStatuses.auto, location)
     else:
         _set_mode(ThermostatStatuses.eco, location)
