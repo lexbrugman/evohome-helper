@@ -88,6 +88,7 @@ def get_today_high_temperature(location):
         select item.forecast
         from weather.forecast
         where woeid in (select woeid from geo.places(1) where text='{}') and u='c'
+        | sort(field="item.forecast.date")
         | truncate(count=1)
     """.format(location))
 
