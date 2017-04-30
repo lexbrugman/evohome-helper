@@ -171,6 +171,12 @@ def _is_heating_needed(location=None):
     if not location:
         location = get_location()
 
+    highest_set_point_temp = _get_highest_set_point_temp(location)
+
+    # all zones are off?
+    if highest_set_point_temp <= settings.EVOHOME_SCHEDULE_OFF_TEMP:
+        return True
+
     location_string = "{}, {}".format(location.city, location.country)
     outside_high_temperature, outside_current_temperature = weather.get_temperature_info(location_string)
 
@@ -183,12 +189,6 @@ def _is_heating_needed(location=None):
 
     # is it a warm day?
     if outside_high_temperature < settings.EVOHOME_HEATING_ECO_TEMPERATURE:
-        return True
-
-    highest_set_point_temp = _get_highest_set_point_temp(location)
-
-    # all zones are off?
-    if highest_set_point_temp <= settings.EVOHOME_SCHEDULE_OFF_TEMP:
         return True
 
     temperature_offset = float(settings.EVOHOME_HEATING_ECO_TEMPERATURE_OFFSET)
