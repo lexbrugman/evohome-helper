@@ -94,7 +94,10 @@ def get_temperature_info(location):
     high_temperature = -99
     current_temperature = -99
     if data:
-        high_temperature = float(data["query"]["results"]["channel"]["item"]["forecast"]["high"])
-        current_temperature = float(data["query"]["results"]["channel"]["item"]["condition"]["temp"])
+        try:
+            high_temperature = float(data["query"]["results"]["channel"]["item"]["forecast"]["high"])
+            current_temperature = float(data["query"]["results"]["channel"]["item"]["condition"]["temp"])
+        except TypeError:
+            logger.exception("error while parsing response from the weather api: %s", data)
 
     return round(high_temperature, 1), round(current_temperature, 1)
