@@ -79,7 +79,11 @@ def _query(query):
 
         return None
 
-    return response.json()
+    data = response.json()
+    query = data.get("query", {"results": None})
+    result = query.get("results")
+
+    return result
 
 
 def get_temperature_info(location):
@@ -95,8 +99,9 @@ def get_temperature_info(location):
     current_temperature = -99
     if data:
         try:
-            high_temperature = float(data["query"]["results"]["channel"]["item"]["forecast"]["high"])
-            current_temperature = float(data["query"]["results"]["channel"]["item"]["condition"]["temp"])
+            item_data = data["channel"]["item"]
+            high_temperature = float(item_data["forecast"]["high"])
+            current_temperature = float(item_data["condition"]["temp"])
         except TypeError:
             logger.exception("error while parsing response from the weather api: %s", data)
 
