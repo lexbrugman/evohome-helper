@@ -188,7 +188,7 @@ def _is_heating_needed(location=None):
     )
 
     # is it a warm day?
-    if outside_high_temperature < settings.EVOHOME_HEATING_ECO_TEMPERATURE:
+    if outside_current_temperature < settings.EVOHOME_HEATING_ECO_TEMPERATURE:
         return True
 
     temperature_offset = float(settings.EVOHOME_HEATING_ECO_TEMPERATURE_OFFSET)
