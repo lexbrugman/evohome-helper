@@ -4,6 +4,7 @@ import logging
 from urllib import parse as url_parse
 
 from homecontrol import settings
+from homecontrol.func_tools import return_cache
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +58,7 @@ def _write_data(filename, data):
         json.dump(data, f, indent=4, sort_keys=True)
 
 
+@return_cache(refresh_interval=900)
 def _query(query):
     query_data = {
         "q": query,
@@ -69,9 +71,13 @@ def _query(query):
 
     response = None
     try:
-        response = _client().session.get(url)
+        response = _client().session.get(
+            url,
+            timeout=10,
+        )
         response.raise_for_status()
-    except:
+
+    except Exception:
         if response:
             logger.error("got a %s from the weather api: %s", response.status_code, response.content)
         else:
