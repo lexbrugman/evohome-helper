@@ -45,7 +45,7 @@ if __name__ == "__main__":
     while True:
         try:
             set_thermostat_mode()
-        except:
+        except Exception:
             logger.exception("error in loop")
 
         time.sleep(300)
