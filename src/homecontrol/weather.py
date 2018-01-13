@@ -1,10 +1,10 @@
 import json
 import logging
+import settings
 
+from homecontrol.func_tools import return_cache
 from urllib import parse as url_parse
 
-from homecontrol import settings
-from homecontrol.func_tools import return_cache
 
 logger = logging.getLogger(__name__)
 

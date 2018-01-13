@@ -1,10 +1,10 @@
 import logging
+import settings
 
 from netaddr import IPAddress
 from netaddr import IPNetwork
 from pyunifi.controller import Controller as BaseUnifiClient
 
-from homecontrol import settings
 
 logger = logging.getLogger(__name__)
 
