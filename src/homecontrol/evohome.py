@@ -1,12 +1,12 @@
 import inspect
 import logging
+import settings
 
 from datetime import datetime
 from evohomeclient2 import EvohomeClient as BaseEvohomeClient
+from homecontrol import weather
 from time import sleep
 
-from homecontrol import settings
-from homecontrol import weather
 
 logger = logging.getLogger(__name__)
 

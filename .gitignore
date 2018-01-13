@@ -2,4 +2,4 @@
 .venv/
 *.pyc
 src/yahoo_secrets.json
-src/homecontrol/settings.py
+src/settings.py
