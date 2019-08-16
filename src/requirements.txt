@@ -1,4 +1,4 @@
 evohomeclient==0.2.5
-pyunifi==2.0
+pyunifi==2.16
 netaddr==0.7.19
 yahoo_oauth==0.1.9
