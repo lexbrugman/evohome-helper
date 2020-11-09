@@ -93,22 +93,22 @@ def _query(query):
 
 
 def get_temperature_info(location):
-    data = _query("""
-        select item.forecast, item.condition
-        from weather.forecast
-        where woeid in (select woeid from geo.places(1) where text='{}') and u='c'
-        | sort(field="item.forecast.date")
-        | truncate(count=1)
-    """.format(location))
+    #data = _query("""
+    #    select item.forecast, item.condition
+    #    from weather.forecast
+    #    where woeid in (select woeid from geo.places(1) where text='{}') and u='c'
+    #    | sort(field="item.forecast.date")
+    #    | truncate(count=1)
+    #""".format(location))
 
     high_temperature = -99
     current_temperature = -99
-    if data:
-        try:
-            item_data = data["channel"]["item"]
-            high_temperature = float(item_data["forecast"]["high"])
-            current_temperature = float(item_data["condition"]["temp"])
-        except TypeError:
-            logger.exception("error while parsing response from the weather api: %s", data)
+    #if data:
+    #    try:
+    #        item_data = data["channel"]["item"]
+    #        high_temperature = float(item_data["forecast"]["high"])
+    #        current_temperature = float(item_data["condition"]["temp"])
+    #    except TypeError:
+    #        logger.exception("error while parsing response from the weather api: %s", data)
 
     return round(high_temperature, 1), round(current_temperature, 1)
