@@ -16,13 +16,13 @@ def set_thermostat_mode():
     zones = evohome.get_zones(location)
     for zone in zones:
         temperature_status = zone.temperatureStatus
-        setpoint_status = zone.heatSetpointStatus
+        setpoint_status = zone.setpointStatus
 
         logger.info(
             "%s: %s/%s (%s)",
             zone.name,
             temperature_status["temperature"],
-            setpoint_status["targetTemperature"],
+            setpoint_status["targetHeatTemperature"],
             setpoint_status["setpointMode"],
         )
 
