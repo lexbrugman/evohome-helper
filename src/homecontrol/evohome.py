@@ -89,7 +89,7 @@ def is_in_schedule_grace_period(location=None):
     return False
 
 
-def _parse_switch_point(switch_point):
+def _switch_point_to_datetime(switch_point):
     now = get_current_time()
     cur_year = int(now.strftime("%Y"))
     cur_week_num = now.strftime("%U")
@@ -112,33 +112,53 @@ def _parse_switch_point(switch_point):
     )
 
 
-def _get_current_zone_switch_point_from_schedule(zone):
-    last_switch_point = _parse_switch_point({
-        "DayOfWeek": 6,
-        "TimeOfDay": "00:00:00",
-    })
-    last_switch_point_temperature = -99
-
-    now = get_current_time()
+def _get_zone_switch_points(zone):
+    switch_points = []
 
     zone_schedule_days = zone.schedule()["DailySchedules"]
     for zone_schedule_day in zone_schedule_days:
         zone_switch_points = zone_schedule_day["Switchpoints"]
         for zone_switch_point in zone_switch_points:
-            zone_switch_point = dict(zone_switch_point)
-            zone_switch_point["DayOfWeek"] = zone_schedule_day["DayOfWeek"]
+            switch_point = dict(zone_switch_point)
+            switch_point.update(DayOfWeek=zone_schedule_day["DayOfWeek"])
+            switch_points.append(switch_point)
 
-            if zone_switch_point["TargetTemperature"] <= settings.EVOHOME_SCHEDULE_OFF_TEMP:
+    switch_points.sort(key=lambda zsp: _switch_point_to_datetime(zsp))
+
+    return switch_points
+
+
+def _get_current_zone_switch_point_from_schedule(zone):
+    last_switch_point_datetime = _switch_point_to_datetime({
+        "DayOfWeek": 6,
+        "TimeOfDay": "00:00:00",
+    })
+    last_switch_point_temperature = -99
+    previous_zone_switch_point_temperature = last_switch_point_temperature
+
+    now = get_current_time()
+
+    for zone_switch_point in _get_zone_switch_points(zone):
+        zone_switch_point_temperature = zone_switch_point["heatSetpoint"]
+        zone_switch_point_datetime = _switch_point_to_datetime(zone_switch_point)
+
+        try:
+            if zone_switch_point_temperature == previous_zone_switch_point_temperature:
                 continue
 
-            switch_point = _parse_switch_point(zone_switch_point)
-            if switch_point > now or switch_point < last_switch_point:
+            if zone_switch_point_temperature <= settings.EVOHOME_SCHEDULE_OFF_TEMP:
                 continue
 
-            last_switch_point = switch_point
-            last_switch_point_temperature = zone_switch_point["TargetTemperature"]
+            if zone_switch_point_datetime > now or zone_switch_point_datetime < last_switch_point_datetime:
+                continue
 
-    return last_switch_point, last_switch_point_temperature
+            last_switch_point_datetime = zone_switch_point_datetime
+            last_switch_point_temperature = zone_switch_point_temperature
+
+        finally:
+            previous_zone_switch_point_temperature = zone_switch_point_temperature
+
+    return last_switch_point_datetime, last_switch_point_temperature
 
 
 def get_zones(location=None):
@@ -160,7 +180,7 @@ def _is_override_enabled(control_system):
         return True
 
     for zone in control_system.zones.values():
-        setpoint_status = zone.heatSetpointStatus
+        setpoint_status = zone.setpointStatus
         if setpoint_status["setpointMode"] != "FollowSchedule":
             return True
 
@@ -202,9 +222,7 @@ def _get_highest_set_point_temp(location=None):
     zones = get_zones(location)
     for zone in zones:
         switch_point, set_point_temperature = _get_current_zone_switch_point_from_schedule(zone)
-
-        if set_point_temperature > highest_set_point_temperature:
-            highest_set_point_temperature = set_point_temperature
+        highest_set_point_temperature = max(set_point_temperature, highest_set_point_temperature)
 
     return highest_set_point_temperature
 
@@ -224,7 +242,7 @@ def _set_mode(new_mode, location=None):
                 continue
 
             logger.debug("changing thermostat (%s) mode to '%s'", control_system.systemId, new_mode["mode"])
-            control_system._set_status(new_mode["status"])
+            control_system.set_status(new_mode["status"])
 
 
 def set_normal(location=None):
