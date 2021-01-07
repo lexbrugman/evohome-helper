@@ -15,7 +15,11 @@ def is_someone_home():
     someone_home = True
 
     try:
-        response = requests.get(url, headers=headers)
+        response = requests.get(
+            url,
+            headers=headers,
+            timeout=5,
+        )
         if response.ok:
             someone_home = response.json().get("state") == "home"
     except Exception:
