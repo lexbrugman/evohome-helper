@@ -1,5 +1,4 @@
 .idea/
 .venv/
 *.pyc
-src/yahoo_secrets.json
 src/settings.py

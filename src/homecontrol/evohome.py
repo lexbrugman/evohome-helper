@@ -7,8 +7,8 @@ from evohomeclient2 import EvohomeClient as BaseEvohomeClient
 from homecontrol import weather
 from time import sleep
 
-
 logger = logging.getLogger(__name__)
+_evohome_client = None
 
 
 class ThermostatStatuses:
@@ -46,19 +46,24 @@ class EvohomeClient(BaseEvohomeClient):
 
 
 def _client(_retries=0):
-    try:
-        return EvohomeClient(
-            settings.EVOHOME_USERNAME,
-            settings.EVOHOME_PASSWORD,
-        )
+    global _evohome_client
 
-    except KeyError:
-        if _retries >= 4:
-            raise
+    if _evohome_client is None:
+        try:
+            _evohome_client = EvohomeClient(
+                settings.EVOHOME_USERNAME,
+                settings.EVOHOME_PASSWORD,
+            )
 
-        sleep(2)
+        except KeyError:
+            if _retries >= 4:
+                raise
 
-        return _client(_retries + 1)
+            sleep(2)
+
+            return _client(_retries + 1)
+
+    return _evohome_client
 
 
 def get_current_time():
@@ -99,12 +104,9 @@ def _switch_point_to_datetime(switch_point):
     if switch_point_week_day_num == 7:
         switch_point_week_day_num = 0
 
-    switch_point_time_string = "{}-{}-{} {}".format(
-        cur_year,
-        cur_week_num,
-        switch_point_week_day_num,
-        switch_point["TimeOfDay"]
-    )
+    switch_point_time_of_day = switch_point["TimeOfDay"]
+
+    switch_point_time_string = f"{cur_year}-{cur_week_num}-{switch_point_week_day_num} {switch_point_time_of_day}"
 
     return datetime.strptime(
         switch_point_time_string,
@@ -120,10 +122,13 @@ def _get_zone_switch_points(zone):
         zone_switch_points = zone_schedule_day["Switchpoints"]
         for zone_switch_point in zone_switch_points:
             switch_point = dict(zone_switch_point)
-            switch_point.update(DayOfWeek=zone_schedule_day["DayOfWeek"])
+            switch_point["DateTime"] = _switch_point_to_datetime({
+                "DayOfWeek": zone_schedule_day["DayOfWeek"],
+                "TimeOfDay": switch_point["TimeOfDay"],
+            })
             switch_points.append(switch_point)
 
-    switch_points.sort(key=lambda zsp: _switch_point_to_datetime(zsp))
+    switch_points.sort(key=lambda zsp: zsp["DateTime"])
 
     return switch_points
 
@@ -140,7 +145,7 @@ def _get_current_zone_switch_point_from_schedule(zone):
 
     for zone_switch_point in _get_zone_switch_points(zone):
         zone_switch_point_temperature = zone_switch_point["heatSetpoint"]
-        zone_switch_point_datetime = _switch_point_to_datetime(zone_switch_point)
+        zone_switch_point_datetime = zone_switch_point["DateTime"]
 
         try:
             if zone_switch_point_temperature == previous_zone_switch_point_temperature:
@@ -197,7 +202,7 @@ def _is_heating_needed(location=None):
     if highest_set_point_temp <= settings.EVOHOME_SCHEDULE_OFF_TEMP:
         return True
 
-    location_string = "{}, {}".format(location.city, location.country)
+    location_string = f"{location.city}, {location.country}"
     outside_high_temperature, outside_current_temperature = weather.get_temperature_info(location_string)
 
     logger.debug(
