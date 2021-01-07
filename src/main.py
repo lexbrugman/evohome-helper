@@ -5,7 +5,6 @@ import time
 
 from logging import config as log_config
 
-
 log_config.fileConfig("logging.conf")
 logger = logging.getLogger(__name__)
 
@@ -30,7 +29,7 @@ def set_thermostat_mode():
         logger.info("in grace period of schedule start time")
         evohome.set_normal(location)
 
-    elif unifi.is_someone_home():
+    elif presence.is_someone_home():
         logger.info("someone is home")
         evohome.set_normal(location)
 
@@ -41,7 +40,7 @@ def set_thermostat_mode():
 
 if __name__ == "__main__":
     from homecontrol import evohome
-    from homecontrol import unifi
+    from homecontrol import presence
 
     while True:
         try:
