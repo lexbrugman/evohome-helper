@@ -38,6 +38,8 @@ class ThermostatStatuses:
 
 class EvohomeClient(BaseEvohomeClient):
     def get_location(self, name):
+        self.installation()  # refresh the heating system data
+
         for location in self.locations:
             if location.name == name:
                 return location
