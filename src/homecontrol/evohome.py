@@ -204,14 +204,11 @@ def _is_heating_needed(location=None):
     if highest_set_point_temp <= settings.EVOHOME_SCHEDULE_OFF_TEMP:
         return True
 
-    location_string = f"{location.city}, {location.country}"
-    outside_high_temperature, outside_current_temperature = weather.get_temperature_info(location_string)
+    outside_current_temperature = weather.get_temperature_info()
 
     logger.debug(
-        "current outside (%s) temperature: %s degrees celsius (today high = %s)",
-        location_string,
+        "current outside temperature: %s degrees celsius",
         outside_current_temperature,
-        outside_high_temperature,
     )
 
     # is it a warm day?
