@@ -24,8 +24,8 @@ def get_temperature_info():
             timeout=5,
         )
         if response.ok:
-            weather_data = response.json().get("attributes")
-            current_temperature = weather_data.get("temperature")
+            weather_data = response.json().get("attributes", {})
+            current_temperature = weather_data.get("temperature", current_temperature)
     except Exception:
         logger.exception("failed getting weather information")
 
