@@ -194,7 +194,7 @@ def _is_override_enabled(control_system):
     return False
 
 
-def _is_heating_needed(location=None):
+def _is_normal_heating_needed(location=None):
     if not location:
         location = get_location()
 
@@ -211,7 +211,7 @@ def _is_heating_needed(location=None):
         outside_current_temperature,
     )
 
-    # are we below the eco mode temp?
+    # are we below the eco mode threshold?
     if outside_current_temperature < settings.HEATING_ECO_TEMPERATURE:
         return True
 
@@ -250,7 +250,7 @@ def _set_mode(new_mode, location=None):
 
 
 def set_normal(location=None):
-    if _is_heating_needed(location):
+    if _is_normal_heating_needed(location):
         _set_mode(ThermostatStatuses.auto, location)
     else:
         _set_mode(ThermostatStatuses.eco, location)
