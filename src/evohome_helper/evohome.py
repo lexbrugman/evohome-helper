@@ -4,7 +4,7 @@ import settings
 
 from datetime import datetime
 from evohomeclient2 import EvohomeClient as BaseEvohomeClient
-from homecontrol import weather
+from evohome_helper import weather
 from time import sleep
 
 logger = logging.getLogger(__name__)
@@ -90,7 +90,7 @@ def is_in_schedule_grace_period(location=None):
         )
 
         since_switch_point = now - switch_point
-        if since_switch_point.total_seconds() < settings.EVOHOME_SCHEDULE_GRACE_TIME:
+        if since_switch_point.total_seconds() < settings.SCHEDULE_GRACE_TIME:
             return True
 
     return False
@@ -212,10 +212,10 @@ def _is_heating_needed(location=None):
     )
 
     # is it a warm day?
-    if outside_current_temperature < settings.EVOHOME_HEATING_ECO_TEMPERATURE:
+    if outside_current_temperature < settings.HEATING_ECO_TEMPERATURE:
         return True
 
-    temperature_offset = float(settings.EVOHOME_HEATING_ECO_TEMPERATURE_OFFSET)
+    temperature_offset = float(settings.HEATING_ECO_TEMPERATURE_OFFSET)
 
     return outside_current_temperature + temperature_offset < highest_set_point_temp
 
