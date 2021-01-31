@@ -2,7 +2,7 @@ import logging
 import requests
 import settings
 
-from homecontrol.func_tools import return_cache
+from evohome_helper.func_tools import return_cache
 
 logger = logging.getLogger(__name__)
 

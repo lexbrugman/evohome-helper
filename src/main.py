@@ -25,22 +25,23 @@ def set_thermostat_mode():
             setpoint_status["setpointMode"],
         )
 
-    if evohome.is_in_schedule_grace_period(location):
-        logger.info("in grace period of schedule start time")
-        evohome.set_normal(location)
-
-    elif presence.is_someone_home():
+    if presence.is_someone_home():
         logger.info("someone is home")
         evohome.set_normal(location)
 
     else:
         logger.info("no one is home")
-        evohome.set_away(location)
+
+        if presence.is_in_away_grace_period() and evohome.is_in_schedule_grace_period(location):
+            logger.info("in grace period of schedule start time")
+            evohome.set_normal(location)
+        else:
+            evohome.set_away(location)
 
 
 if __name__ == "__main__":
-    from homecontrol import evohome
-    from homecontrol import presence
+    from evohome_helper import evohome
+    from evohome_helper import presence
 
     while True:
         try:
