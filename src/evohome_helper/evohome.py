@@ -211,7 +211,7 @@ def _is_heating_needed(location=None):
         outside_current_temperature,
     )
 
-    # is it a warm day?
+    # are we below the eco mode temp?
     if outside_current_temperature < settings.HEATING_ECO_TEMPERATURE:
         return True
 
