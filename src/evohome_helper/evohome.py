@@ -90,7 +90,7 @@ def is_in_schedule_grace_period(location=None):
         )
 
         since_switch_point = now - switch_point
-        if since_switch_point.total_seconds() < settings.SCHEDULE_GRACE_TIME:
+        if since_switch_point.total_seconds() < settings.HEATING_SCHEDULE_GRACE_TIME:
             return True
 
     return False
@@ -153,7 +153,7 @@ def _get_current_zone_switch_point_from_schedule(zone):
             if zone_switch_point_temperature == previous_zone_switch_point_temperature:
                 continue
 
-            if zone_switch_point_temperature <= settings.EVOHOME_SCHEDULE_OFF_TEMP:
+            if zone_switch_point_temperature <= settings.HEATING_SCHEDULE_OFF_TEMP:
                 continue
 
             if zone_switch_point_datetime > now or zone_switch_point_datetime < last_switch_point_datetime:
@@ -201,7 +201,7 @@ def _is_heating_needed(location=None):
     highest_set_point_temp = _get_highest_set_point_temp(location)
 
     # all zones are off?
-    if highest_set_point_temp <= settings.EVOHOME_SCHEDULE_OFF_TEMP:
+    if highest_set_point_temp <= settings.HEATING_SCHEDULE_OFF_TEMP:
         return True
 
     outside_current_temperature = weather.get_temperature_info()
