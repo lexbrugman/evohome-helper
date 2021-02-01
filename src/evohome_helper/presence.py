@@ -37,7 +37,7 @@ def _get_data():
             attributes = response_data.get("attributes", {})
 
             someone_home = response_data.get("state") == "home"
-            seconds_since_last_seen = attributes.get("seconds_since_last_seen")
+            seconds_since_last_seen = attributes.get("seconds_since_last_seen", 0)
     except Exception:
         logger.exception("failed getting presence information")
 
