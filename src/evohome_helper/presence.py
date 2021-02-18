@@ -8,20 +8,24 @@ logger = logging.getLogger(__name__)
 
 
 def is_someone_home():
-    return _get_data().get("is_someone_home")
+    for entity_id in settings.HOMEASSISTANT_PRESENCE_ENTITIES:
+        if _get_data(entity_id).get("is_someone_home"):
+            return True
+
+    return False
 
 
 def is_in_away_grace_period():
-    return _get_data().get("seconds_since_last_seen") <= settings.LAST_HOME_GRACE_TIME
+    for entity_id in settings.HOMEASSISTANT_PRESENCE_ENTITIES:
+        if _get_data(entity_id).get("seconds_since_last_seen") <= settings.LAST_HOME_GRACE_TIME:
+            return True
+
+    return False
 
 
 @return_cache(refresh_interval=60)
-def _get_data():
-    url = f"{settings.HOMEASSISTANT_URL}/api/states/{settings.HOMEASSISTANT_PRESENCE_ENTITY}"
-    headers = {
-        "Authorization": f"Bearer {settings.HOMEASSISTANT_TOKEN}",
-        "content-type": "application/json",
-    }
+def _get_data(entity_id):
+    url = f"{settings.HOMEASSISTANT_URL}/api/states/{entity_id}"
 
     someone_home = True
     seconds_since_last_seen = 0
@@ -29,7 +33,7 @@ def _get_data():
     try:
         response = requests.get(
             url,
-            headers=headers,
+            headers=_headers(),
             timeout=5,
         )
         if response.ok:
@@ -44,4 +48,11 @@ def _get_data():
     return {
         "is_someone_home": someone_home,
         "seconds_since_last_seen": seconds_since_last_seen,
+    }
+
+
+def _headers():
+    return {
+        "Authorization": f"Bearer {settings.HOMEASSISTANT_TOKEN}",
+        "content-type": "application/json",
     }
