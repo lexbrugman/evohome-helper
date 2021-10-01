@@ -18,7 +18,7 @@ def is_someone_home():
 def is_in_away_grace_period():
     for entity_id in settings.HOMEASSISTANT_PRESENCE_ENTITIES:
         seconds_since_last_seen = _get_data(entity_id).get("seconds_since_last_seen")
-        if seconds_since_last_seen && seconds_since_last_seen <= settings.LAST_HOME_GRACE_TIME:
+        if seconds_since_last_seen and seconds_since_last_seen <= settings.LAST_HOME_GRACE_TIME:
             return True
 
     return False
