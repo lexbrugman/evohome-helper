@@ -17,7 +17,8 @@ def is_someone_home():
 
 def is_in_away_grace_period():
     for entity_id in settings.HOMEASSISTANT_PRESENCE_ENTITIES:
-        if _get_data(entity_id).get("seconds_since_last_seen") <= settings.LAST_HOME_GRACE_TIME:
+        seconds_since_last_seen = _get_data(entity_id).get("seconds_since_last_seen")
+        if seconds_since_last_seen && seconds_since_last_seen <= settings.LAST_HOME_GRACE_TIME:
             return True
 
     return False
@@ -41,7 +42,7 @@ def _get_data(entity_id):
             attributes = response_data.get("attributes", {})
 
             someone_home = response_data.get("state") == "home"
-            seconds_since_last_seen = attributes.get("seconds_since_last_seen", 0)
+            seconds_since_last_seen = attributes.get("seconds_since_last_seen")
     except Exception:
         logger.exception("failed getting presence information")
 
