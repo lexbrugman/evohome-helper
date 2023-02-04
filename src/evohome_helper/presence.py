@@ -5,6 +5,7 @@ import settings
 from evohome_helper.func_tools import return_cache
 
 logger = logging.getLogger(__name__)
+last_known_presence_state = {}
 
 
 def is_someone_home():
@@ -28,9 +29,6 @@ def is_in_away_grace_period():
 def _get_data(entity_id):
     url = f"{settings.HOMEASSISTANT_URL}/api/states/{entity_id}"
 
-    someone_home = True
-    seconds_since_last_seen = 0
-
     try:
         response = requests.get(
             url,
@@ -43,13 +41,18 @@ def _get_data(entity_id):
 
             someone_home = response_data.get("state") == "home"
             seconds_since_last_seen = attributes.get("seconds_since_last_seen")
+            
+            last_known_presence_state[entity_id] = {
+                "is_someone_home": someone_home,
+                "seconds_since_last_seen": seconds_since_last_seen,
+            }
     except Exception:
         logger.exception("failed getting presence information")
 
-    return {
-        "is_someone_home": someone_home,
-        "seconds_since_last_seen": seconds_since_last_seen,
-    }
+    return last_known_presence_state.setdefault(entity_id, {
+        "is_someone_home": False,
+        "seconds_since_last_seen": 0,
+    })
 
 
 def _headers():
