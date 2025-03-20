@@ -47,6 +47,11 @@ class EvohomeClient(BaseEvohomeClient):
         return None
 
 
+class LocationNotFound(Exception):
+    def __init__(self, location_name):
+        super().__init__(f"the location '{location_name}' does not exist in the evohome account")
+
+
 def _client(_retries=0):
     global _evohome_client
 
@@ -73,7 +78,12 @@ def get_current_time():
 
 
 def get_location():
-    return _client().get_location(settings.EVOHOME_LOCATION_NAME)
+    location_name = settings.EVOHOME_LOCATION_NAME
+    location = _client().get_location(location_name)
+    if not location:
+        raise LocationNotFound(location_name)
+
+    return location
 
 
 def is_in_schedule_grace_period(location=None):
