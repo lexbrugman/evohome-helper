@@ -77,8 +77,10 @@ def get_current_time():
     return datetime.now().replace(microsecond=0)
 
 
-def get_location():
-    location_name = settings.EVOHOME_LOCATION_NAME
+def get_location(location_name=None):
+    if not location_name:
+        location_name = settings.EVOHOME_LOCATION_NAME
+
     location = _client().get_location(location_name)
     if not location:
         raise LocationNotFound(location_name)
@@ -178,10 +180,7 @@ def _get_current_zone_switch_point_from_schedule(zone):
     return last_switch_point_datetime, last_switch_point_temperature
 
 
-def get_zones(location=None):
-    if not location:
-        location = get_location()
-
+def get_zones(location):
     for gateway in location.gateways.values():
         for control_system in gateway.control_systems.values():
             for zone in control_system.zones.values():
@@ -204,10 +203,7 @@ def _is_override_enabled(control_system):
     return False
 
 
-def _is_normal_heating_needed(location=None):
-    if not location:
-        location = get_location()
-
+def _is_normal_heating_needed(location):
     highest_set_point_temp = _get_highest_set_point_temp(location)
 
     # all zones are off?
@@ -241,10 +237,7 @@ def _get_highest_set_point_temp(location=None):
     return highest_set_point_temperature
 
 
-def _set_mode(new_mode, location=None):
-    if not location:
-        location = get_location()
-
+def _set_mode(new_mode, location):
     for gateway in location.gateways.values():
         for control_system in gateway.control_systems.values():
             current_mode = ThermostatStatuses.get_by_mode(control_system.systemModeStatus["mode"])
@@ -259,12 +252,12 @@ def _set_mode(new_mode, location=None):
             control_system.set_status(new_mode["status"])
 
 
-def set_normal(location=None):
+def set_normal(location):
     if _is_normal_heating_needed(location):
         _set_mode(ThermostatStatuses.auto, location)
     else:
         _set_mode(ThermostatStatuses.eco, location)
 
 
-def set_away(location=None):
+def set_away(location):
     _set_mode(ThermostatStatuses.custom, location)
