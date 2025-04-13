@@ -1,11 +1,12 @@
 #!/usr/bin/env python
 
 import logging
+import os
 import time
 
 from logging import config as log_config
 
-log_config.fileConfig("logging.conf")
+log_config.fileConfig(os.path.join(os.path.dirname(__file__), "logging.conf"))
 logger = logging.getLogger(__name__)
 
 

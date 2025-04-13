@@ -1,0 +1,35 @@
+name: Evohome helper
+description: "This tool adds presence detection and other cost saving measures to any honeywell evohome installation."
+version: "1.0.0"
+slug: "evohome_helper"
+init: false
+homeassistant_api: true
+options:
+  evohome_username:
+  evohome_password:
+  evohome_location_name:
+  presence_entities:
+  weather_entity:
+  last_home_grace_time: 86400
+  heating_schedule_grace_time: 1800
+  heating_schedule_off_temp: 15.0
+  heating_eco_temperature: 18.0
+  heating_eco_temperature_offset: 1.0
+schema:
+  evohome_username: email
+  evohome_password: password
+  evohome_location_name: str
+  presence_entities:
+    - str
+  weather_entity: str
+  last_home_grace_time: int
+  heating_schedule_grace_time: int
+  heating_schedule_off_temp: float
+  heating_eco_temperature: float
+  heating_eco_temperature_offset: float
+arch:
+  - aarch64
+  - amd64
+  - armhf
+  - armv7
+  - i386
