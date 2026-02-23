@@ -8,14 +8,18 @@ logger = logging.getLogger(__name__)
 
 
 @return_cache(refresh_interval=1800)
-def get_temperature_info():
-    url = f"{settings.HOMEASSISTANT_URL}/api/states/{settings.HOMEASSISTANT_WEATHER_ENTITY}"
+def get_temperature():
+    current_temperature = -99
+
+    ha_weather_entity = settings.HOMEASSISTANT_AUTO_ECO_WEATHER_ENTITY
+    if ha_weather_entity is None:
+        return current_temperature
+
+    url = f"{settings.HOMEASSISTANT_URL}/api/states/{ha_weather_entity}"
     headers = {
         "Authorization": f"Bearer {settings.HOMEASSISTANT_TOKEN}",
         "content-type": "application/json",
     }
-
-    current_temperature = -99
 
     try:
         response = requests.get(
