@@ -1,0 +1,39 @@
+name: Publisher
+
+on:
+  push:
+    branches:
+      - dev
+    tags:
+      - v*
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    name: Publish
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v6.0.2
+
+      - name: Prepare build data
+        id: build_data
+        run: |
+          if [ "${{ github.ref_type }}" == "branch" ] && [ "${{ github.ref_name }}" == "dev" ]; then
+            echo "app=evohome_helper_edge" >> $GITHUB_OUTPUT
+            echo "version=dev-$(git rev-parse --short ${{ github.sha }})" >> $GITHUB_OUTPUT
+          elif [ "${{ github.ref_type }}" == "tag" ] && [ "${{ github.ref_name }}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]; then
+            echo "app=evohome_helper" >> $GITHUB_OUTPUT
+            echo "version=$(echo "${{ github.ref_name }}" | sed 's/^v//')" >> $GITHUB_OUTPUT
+          else
+            exit 1
+          fi
+          echo "artifact_url=${{ github.server_url }}/${{ github.repository }}/archive/${{ github.sha }}.tar.gz" >> $GITHUB_OUTPUT
+
+      - name: Trigger app build
+        uses: benc-uk/workflow-dispatch@v1
+        with:
+          workflow: builder.yaml
+          repo: ${{ github.repository_owner }}/ha-apps
+          ref: master
+          inputs: '{ "app": "${{ steps.build_data.outputs.app }}", "version": "${{ steps.build_data.outputs.version }}", "artifact_url": "${{ steps.build_data.outputs.artifact_url }}" }'
+          token: '${{ secrets.HA_APPS_PAT }}'

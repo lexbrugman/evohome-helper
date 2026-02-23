@@ -1,4 +1,4 @@
 .idea/
 .venv/
 *.pyc
-src/settings.py
+/src/settings.py
