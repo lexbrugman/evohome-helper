@@ -102,7 +102,7 @@ def is_in_schedule_grace_period(location=None):
         )
 
         since_switch_point = now - switch_point
-        if since_switch_point.total_seconds() < settings.HEATING_SCHEDULE_GRACE_TIME:
+        if since_switch_point.total_seconds() < settings.PRESENCE_HEATING_SCHEDULE_GRACE_TIME:
             return True
 
     return False
@@ -165,7 +165,7 @@ def _get_current_zone_switch_point_from_schedule(zone):
             if zone_switch_point_temperature == previous_zone_switch_point_temperature:
                 continue
 
-            if zone_switch_point_temperature <= settings.HEATING_SCHEDULE_OFF_TEMP:
+            if _is_considered_off(zone_switch_point_temperature):
                 continue
 
             if zone_switch_point_datetime > now or zone_switch_point_datetime < last_switch_point_datetime:
@@ -190,6 +190,10 @@ def get_zones(location):
                 yield zone
 
 
+def _is_considered_off(temperature):
+    return temperature <= settings.EVOHOME_OFF_TEMP_THRESHOLD
+
+
 def _is_override_enabled(control_system):
     current_mode = ThermostatStatuses.get_by_mode(control_system.systemModeStatus["mode"])
     if current_mode in [ThermostatStatuses.away, ThermostatStatuses.day_off, ThermostatStatuses.off]:
@@ -204,26 +208,32 @@ def _is_override_enabled(control_system):
 
 
 def _is_normal_heating_needed(location):
+    if not settings.AUTO_ECO_ENABLED:
+        return True
+
+    outside_temp_threshold = settings.AUTO_ECO_OUTSIDE_TEMP_THRESHOLD
+    inside_temp_diff = settings.AUTO_ECO_INSIDE_TEMP_DIFF
     highest_set_point_temp = _get_highest_set_point_temp(location)
 
     # all zones are off?
-    if highest_set_point_temp <= settings.HEATING_SCHEDULE_OFF_TEMP:
+    if _is_considered_off(highest_set_point_temp):
         return True
 
-    outside_current_temperature = weather.get_temperature_info()
+    # can we fetch a valid temperature?
+    outside_current_temp = weather.get_temperature()
+    if outside_current_temp <= -99:
+        return True
 
     logger.debug(
         "current outside temperature: %s degrees celsius",
-        outside_current_temperature,
+        outside_current_temp,
     )
 
     # are we below the eco mode threshold?
-    if outside_current_temperature < settings.HEATING_ECO_TEMPERATURE:
+    if outside_current_temp < outside_temp_threshold:
         return True
 
-    temperature_offset = float(settings.HEATING_ECO_TEMPERATURE_OFFSET)
-
-    return outside_current_temperature + temperature_offset < highest_set_point_temp
+    return outside_current_temp + inside_temp_diff < highest_set_point_temp
 
 
 def _get_highest_set_point_temp(location=None):
