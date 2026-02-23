@@ -204,6 +204,10 @@ def _is_override_enabled(control_system):
 
 
 def _is_normal_heating_needed(location):
+    eco_temperature = settings.HEATING_ECO_TEMPERATURE
+    if eco_temperature is None:
+        return True
+
     highest_set_point_temp = _get_highest_set_point_temp(location)
 
     # all zones are off?
@@ -218,10 +222,13 @@ def _is_normal_heating_needed(location):
     )
 
     # are we below the eco mode threshold?
-    if outside_current_temperature < settings.HEATING_ECO_TEMPERATURE:
+    if outside_current_temperature < eco_temperature:
         return True
 
-    temperature_offset = float(settings.HEATING_ECO_TEMPERATURE_OFFSET)
+    try:
+        temperature_offset = float(settings.HEATING_ECO_TEMPERATURE_OFFSET or 0.0)
+    except (TypeError, ValueError):
+        temperature_offset = 0.0
 
     return outside_current_temperature + temperature_offset < highest_set_point_temp
 
