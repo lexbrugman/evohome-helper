@@ -10,7 +10,7 @@ Depends on Home Assistant for presence and weather information.
 
 ## Features
 
-- Presence detection (switches to 'Custom' when no-one is home)
+- Presence detection (switches to the configured mode when no-one is home)
 - Use eco mode with warm weather to save energy
 
 ## Install via Home Assistant

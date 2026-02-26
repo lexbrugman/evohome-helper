@@ -9,6 +9,7 @@ EVOHOME_LOCATION_NAME = add_on_config["evohome"]["location_name"]
 EVOHOME_USERNAME = add_on_config["evohome"]["username"]
 EVOHOME_PASSWORD = add_on_config["evohome"]["password"]
 EVOHOME_OFF_TEMP_THRESHOLD = add_on_config["evohome"]["off_temp_threshold"]
+EVOHOME_AWAY_MODE = add_on_config["evohome"]["away_mode"]
 
 HOMEASSISTANT_URL = "http://supervisor/core"
 HOMEASSISTANT_TOKEN = os.environ["SUPERVISOR_TOKEN"]

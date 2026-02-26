@@ -3,6 +3,7 @@ import logging
 import settings
 
 from datetime import datetime
+from enum import Enum
 from evohomeclient2 import EvohomeClient as BaseEvohomeClient
 from evohome_helper import weather
 from time import sleep
@@ -11,27 +12,27 @@ logger = logging.getLogger(__name__)
 _evohome_client = None
 
 
-class ThermostatStatuses:
-    auto = {"mode": "Auto", "status": 0}
-    off = {"mode": "HeatingOff", "status": 1}
-    eco = {"mode": "AutoWithEco", "status": 2}
-    away = {"mode": "Away", "status": 3}
-    day_off = {"mode": "DayOff", "status": 4}
-    custom = {"mode": "Custom", "status": 6}
+class ThermostatStatus(Enum):
+    auto = ("Auto", 0)
+    off = ("HeatingOff", 1)
+    eco = ("AutoWithEco", 2)
+    away = ("Away", 3)
+    day_off = ("DayOff", 4)
+    custom = ("Custom", 6)
+
+    def __init__(self, mode, status):
+        self.mode = mode
+        self.status = status
 
     @classmethod
     def get_all(cls):
-        statuses = inspect.getmembers(cls, lambda a: not inspect.isroutine(a))
-        statuses = filter(lambda a: not a[0].startswith("__"), statuses)
-
-        return list(statuses)
+        return set(cls)
 
     @classmethod
-    def get_by_mode(cls, mode):
-        statuses = cls.get_all()
-        for status_name, status_data in statuses:
-            if status_data.get("mode") == mode:
-                return getattr(cls, status_name)
+    def get_by_mode(cls, mode: str):
+        for status in cls:
+            if status.mode == mode:
+                return status
 
         return None
 
@@ -194,9 +195,23 @@ def _is_considered_off(temperature):
     return temperature <= settings.EVOHOME_OFF_TEMP_THRESHOLD
 
 
+def _get_desired_away_mode():
+    return ThermostatStatus[settings.EVOHOME_AWAY_MODE]
+
+
+def _get_override_modes():
+    excluded = {
+        ThermostatStatus.auto,
+        ThermostatStatus.eco,
+        _get_desired_away_mode(),
+    }
+
+    return ThermostatStatus.get_all() - excluded
+
+
 def _is_override_enabled(control_system):
-    current_mode = ThermostatStatuses.get_by_mode(control_system.systemModeStatus["mode"])
-    if current_mode in [ThermostatStatuses.away, ThermostatStatuses.day_off, ThermostatStatuses.off]:
+    current_mode = ThermostatStatus.get_by_mode(control_system.systemModeStatus["mode"])
+    if current_mode in _get_override_modes():
         return True
 
     for zone in control_system.zones.values():
@@ -250,7 +265,7 @@ def _get_highest_set_point_temp(location=None):
 def _set_mode(new_mode, location):
     for gateway in location.gateways.values():
         for control_system in gateway.control_systems.values():
-            current_mode = ThermostatStatuses.get_by_mode(control_system.systemModeStatus["mode"])
+            current_mode = ThermostatStatus.get_by_mode(control_system.systemModeStatus["mode"])
             if new_mode == current_mode:
                 continue
 
@@ -258,16 +273,17 @@ def _set_mode(new_mode, location):
                 logger.warning("not changing thermostat (%s) mode, override is set", control_system.systemId)
                 continue
 
-            logger.debug("changing thermostat (%s) mode to '%s'", control_system.systemId, new_mode["mode"])
-            control_system.set_status(new_mode["status"])
+            logger.debug("changing thermostat (%s) mode to '%s'", control_system.systemId, new_mode.mode)
+            control_system.set_status(new_mode.status)
 
 
 def set_normal(location):
     if _is_normal_heating_needed(location):
-        _set_mode(ThermostatStatuses.auto, location)
+        _set_mode(ThermostatStatus.auto, location)
     else:
-        _set_mode(ThermostatStatuses.eco, location)
+        _set_mode(ThermostatStatus.eco, location)
 
 
 def set_away(location):
-    _set_mode(ThermostatStatuses.custom, location)
+    desired_away_mode = _get_desired_away_mode()
+    _set_mode(desired_away_mode, location)
