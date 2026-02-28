@@ -39,6 +39,8 @@ def return_cache(refresh_interval=1800, max_size=64, max_retries=6, back_off=1.2
                 **kwargs
             )
 
+        function_wrapper.cache_clear = _cache_call.cache_clear
+
         return function_wrapper
 
     return function_decorator

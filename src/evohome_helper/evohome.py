@@ -29,6 +29,14 @@ class ThermostatStatus(Enum):
         return set(cls)
 
     @classmethod
+    def get_by_status(cls, status_code: int):
+        for status in cls:
+            if status.status == status_code:
+                return status
+
+        return None
+
+    @classmethod
     def get_by_mode(cls, mode: str):
         for status in cls:
             if status.mode == mode:

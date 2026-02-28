@@ -6,6 +6,9 @@ import time
 
 from logging import config as log_config
 
+from evohome_helper import evohome
+from evohome_helper import presence
+
 log_config.fileConfig(os.path.join(os.path.dirname(__file__), "logging.conf"))
 logger = logging.getLogger(__name__)
 
@@ -41,9 +44,6 @@ def set_thermostat_mode():
 
 
 if __name__ == "__main__":
-    from evohome_helper import evohome
-    from evohome_helper import presence
-
     while True:
         try:
             set_thermostat_mode()
