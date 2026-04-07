@@ -1,236 +1,175 @@
-import inspect
+import asyncio
+import backoff
 import logging
 import settings
 
-from datetime import datetime
-from enum import Enum
-from evohomeclient2 import EvohomeClient as BaseEvohomeClient
+from datetime import datetime, timedelta
+from evohomeasync2 import EvohomeClientOld as EvohomeClient, ControlSystem, Location, Zone
+from evohomeasync2.schemas import SystemMode, ZoneMode
 from evohome_helper import weather
-from time import sleep
+from typing import Generator
 
 logger = logging.getLogger(__name__)
 _evohome_client = None
+_retry = backoff.on_exception(wait_gen=backoff.expo, exception=Exception, max_tries=6)
 
+_AWAY_MODE_MAP = {
+    "auto": SystemMode.AUTO,
+    "off": SystemMode.HEATING_OFF,
+    "eco": SystemMode.AUTO_WITH_ECO,
+    "away": SystemMode.AWAY,
+    "day_off": SystemMode.DAY_OFF,
+    "custom": SystemMode.CUSTOM,
+}
 
-class ThermostatStatus(Enum):
-    auto = ("Auto", 0)
-    off = ("HeatingOff", 1)
-    eco = ("AutoWithEco", 2)
-    away = ("Away", 3)
-    day_off = ("DayOff", 4)
-    custom = ("Custom", 6)
-
-    def __init__(self, mode, status):
-        self.mode = mode
-        self.status = status
-
-    @classmethod
-    def get_all(cls):
-        return set(cls)
-
-    @classmethod
-    def get_by_status(cls, status_code: int):
-        for status in cls:
-            if status.status == status_code:
-                return status
-
-        return None
-
-    @classmethod
-    def get_by_mode(cls, mode: str):
-        for status in cls:
-            if status.mode == mode:
-                return status
-
-        return None
-
-
-class EvohomeClient(BaseEvohomeClient):
-    def get_location(self, name):
-        self.installation()  # refresh the heating system data
-
-        for location in self.locations:
-            if location.name == name:
-                return location
-
-        return None
+_DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 
 
 class LocationNotFound(Exception):
-    def __init__(self, location_name):
+    def __init__(self, location_name: str):
         super().__init__(f"the location '{location_name}' does not exist in the evohome account")
 
 
-def _client(_retries=0):
+@_retry
+async def _client() -> EvohomeClient:
     global _evohome_client
 
     if _evohome_client is None:
-        try:
-            _evohome_client = EvohomeClient(
-                settings.EVOHOME_USERNAME,
-                settings.EVOHOME_PASSWORD,
-            )
-
-        except KeyError:
-            if _retries >= 4:
-                raise
-
-            sleep(2)
-
-            return _client(_retries + 1)
+        new_client = EvohomeClient(
+            settings.EVOHOME_USERNAME,
+            settings.EVOHOME_PASSWORD,
+        )
+        await new_client.update(dont_update_status=True)
+        _evohome_client = new_client
 
     return _evohome_client
 
 
-def get_current_time():
-    return datetime.now().replace(microsecond=0)
+def get_current_time(location: Location) -> datetime:
+    return location.now().replace(microsecond=0)
 
 
-def get_location(location_name=None):
+def get_control_systems(location: Location) -> Generator[ControlSystem, None, None]:
+    for gateway in location.gateways:
+        for control_system in gateway.systems:
+            yield control_system
+
+
+@_retry
+async def _update_location(location: Location) -> None:
+    await location.update()
+
+
+@_retry
+async def _fetch_schedules(system: ControlSystem) -> None:
+    await system.get_schedules()
+
+
+async def get_location(location_name: str = None) -> Location:
     if not location_name:
         location_name = settings.EVOHOME_LOCATION_NAME
 
-    location = _client().get_location(location_name)
-    if not location:
-        raise LocationNotFound(location_name)
+    client = await _client()
+    for location in client.locations:
+        if location.name == location_name:
+            await _update_location(location)
+            await asyncio.gather(
+                *[_fetch_schedules(system) for system in get_control_systems(location)],
+            )
+            return location
 
-    return location
+    raise LocationNotFound(location_name)
 
 
-def is_in_schedule_grace_period(location=None):
-    now = get_current_time()
+def _switchpoint_to_datetime(day_of_week: str, time_of_day: str, now: datetime) -> datetime:
+    target_weekday = _DAY_NAMES.index(day_of_week)
+    days_ago = (now.weekday() - target_weekday) % 7
+    hour, minute, second = (int(x) for x in time_of_day.split(":"))
+    switchpoint_date = now.date() - timedelta(days=days_ago)
+    switchpoint_datetime = datetime(switchpoint_date.year, switchpoint_date.month, switchpoint_date.day, hour, minute, second, tzinfo=now.tzinfo)
+    if switchpoint_datetime > now:
+        switchpoint_datetime -= timedelta(weeks=1)
+    return switchpoint_datetime
+
+
+def _get_zone_switch_points(zone: Zone, now: datetime) -> list[tuple[datetime, float]]:
+    result = []
+    for day_schedule in zone.schedule:
+        for switchpoint in day_schedule["switchpoints"]:
+            switchpoint_datetime = _switchpoint_to_datetime(day_schedule["day_of_week"], switchpoint["time_of_day"], now)
+            result.append((switchpoint_datetime, switchpoint["heat_setpoint"]))
+    result.sort(key=lambda x: x[0])
+    return result
+
+
+def _get_last_heating_switchpoint(zone: Zone, now: datetime) -> tuple[datetime, float]:
+    last_heating_datetime = now - timedelta(weeks=52)
+    last_heating_temperature = -99.0
+    for switchpoint_datetime, switchpoint_temperature in _get_zone_switch_points(zone, now):
+        if not _is_considered_off(switchpoint_temperature):
+            last_heating_datetime = switchpoint_datetime
+            last_heating_temperature = switchpoint_temperature
+    return last_heating_datetime, last_heating_temperature
+
+
+def _get_active_setpoint(zone: Zone, now: datetime) -> float:
+    switch_points = _get_zone_switch_points(zone, now)
+    if not switch_points:
+        return -99.0
+    return switch_points[-1][1]
+
+
+def is_in_schedule_grace_period(location: Location) -> bool:
+    now = get_current_time(location)
 
     zones = get_zones(location)
     for zone in zones:
-        switch_point, switch_point_temperature = _get_current_zone_switch_point_from_schedule(zone)
+        switch_point_start, switch_point_temperature = _get_last_heating_switchpoint(zone, now)
         logger.debug(
             "last scheduled switch point for %s was at: %s (%s degrees celsius)",
             zone.name,
-            switch_point,
-            switch_point_temperature
+            switch_point_start,
+            switch_point_temperature,
         )
 
-        since_switch_point = now - switch_point
+        since_switch_point = now - switch_point_start
         if since_switch_point.total_seconds() < settings.PRESENCE_HEATING_SCHEDULE_GRACE_TIME:
             return True
 
     return False
 
 
-def _switch_point_to_datetime(switch_point):
-    now = get_current_time()
-    cur_year = int(now.strftime("%Y"))
-    cur_week_num = now.strftime("%U")
-
-    # change from 0 = monday to 0 = sunday
-    switch_point_week_day_num = switch_point["DayOfWeek"] + 1
-    if switch_point_week_day_num == 7:
-        switch_point_week_day_num = 0
-
-    switch_point_time_of_day = switch_point["TimeOfDay"]
-
-    switch_point_time_string = f"{cur_year}-{cur_week_num}-{switch_point_week_day_num} {switch_point_time_of_day}"
-
-    return datetime.strptime(
-        switch_point_time_string,
-        "%Y-%U-%w %H:%M:%S"
-    )
-
-
-def _get_zone_switch_points(zone):
-    switch_points = []
-
-    zone_schedule_days = zone.schedule()["DailySchedules"]
-    for zone_schedule_day in zone_schedule_days:
-        zone_switch_points = zone_schedule_day["Switchpoints"]
-        for zone_switch_point in zone_switch_points:
-            switch_point = dict(zone_switch_point)
-            switch_point["DateTime"] = _switch_point_to_datetime({
-                "DayOfWeek": zone_schedule_day["DayOfWeek"],
-                "TimeOfDay": switch_point["TimeOfDay"],
-            })
-            switch_points.append(switch_point)
-
-    switch_points.sort(key=lambda zsp: zsp["DateTime"])
-
-    return switch_points
-
-
-def _get_current_zone_switch_point_from_schedule(zone):
-    last_switch_point_datetime = _switch_point_to_datetime({
-        "DayOfWeek": 6,
-        "TimeOfDay": "00:00:00",
-    })
-    last_switch_point_temperature = -99
-    previous_zone_switch_point_temperature = last_switch_point_temperature
-
-    now = get_current_time()
-
-    for zone_switch_point in _get_zone_switch_points(zone):
-        zone_switch_point_temperature = zone_switch_point["heatSetpoint"]
-        zone_switch_point_datetime = zone_switch_point["DateTime"]
-
-        try:
-            if zone_switch_point_temperature == previous_zone_switch_point_temperature:
+def get_zones(location: Location) -> Generator[Zone, None, None]:
+    for control_system in get_control_systems(location):
+        for zone in control_system.zones:
+            if zone.active_faults:
                 continue
 
-            if _is_considered_off(zone_switch_point_temperature):
-                continue
-
-            if zone_switch_point_datetime > now or zone_switch_point_datetime < last_switch_point_datetime:
-                continue
-
-            last_switch_point_datetime = zone_switch_point_datetime
-            last_switch_point_temperature = zone_switch_point_temperature
-
-        finally:
-            previous_zone_switch_point_temperature = zone_switch_point_temperature
-
-    return last_switch_point_datetime, last_switch_point_temperature
+            yield zone
 
 
-def get_zones(location):
-    for gateway in location.gateways.values():
-        for control_system in gateway.control_systems.values():
-            for zone in control_system.zones.values():
-                if zone.activeFaults:
-                    continue
-
-                yield zone
-
-
-def _is_considered_off(temperature):
+def _is_considered_off(temperature: float) -> bool:
     return temperature <= settings.EVOHOME_OFF_TEMP_THRESHOLD
 
 
-def _get_desired_away_mode():
-    return ThermostatStatus[settings.EVOHOME_AWAY_MODE]
+def _get_desired_away_mode() -> SystemMode:
+    return _AWAY_MODE_MAP[settings.EVOHOME_AWAY_MODE]
 
 
-def _get_override_modes():
-    excluded = {
-        ThermostatStatus.auto,
-        ThermostatStatus.eco,
-        _get_desired_away_mode(),
-    }
-
-    return ThermostatStatus.get_all() - excluded
+def _get_override_modes() -> set:
+    excluded = {SystemMode.AUTO, SystemMode.AUTO_WITH_ECO, _get_desired_away_mode()}
+    return set(SystemMode) - excluded
 
 
-def _is_override_enabled(control_system):
-    current_mode = ThermostatStatus.get_by_mode(control_system.systemModeStatus["mode"])
+def _is_override_enabled(control_system: ControlSystem) -> bool:
+    current_mode = control_system.mode
     if current_mode in _get_override_modes():
         return True
 
-    for zone in control_system.zones.values():
-        setpoint_status = zone.setpointStatus
-        if setpoint_status["setpointMode"] != "FollowSchedule":
-            return True
-
-    return False
+    return any(zone.mode != ZoneMode.FOLLOW_SCHEDULE for zone in control_system.zones)
 
 
-def _is_normal_heating_needed(location):
+async def _is_normal_heating_needed(location: Location) -> bool:
     if not settings.AUTO_ECO_ENABLED:
         return True
 
@@ -243,7 +182,7 @@ def _is_normal_heating_needed(location):
         return True
 
     # can we fetch a valid temperature?
-    outside_current_temp = weather.get_temperature()
+    outside_current_temp = await weather.get_current_temperature()
     if outside_current_temp <= -99:
         return True
 
@@ -259,39 +198,40 @@ def _is_normal_heating_needed(location):
     return outside_current_temp + inside_temp_diff < highest_set_point_temp
 
 
-def _get_highest_set_point_temp(location=None):
-    highest_set_point_temperature = -99
-
-    zones = get_zones(location)
-    for zone in zones:
-        switch_point, set_point_temperature = _get_current_zone_switch_point_from_schedule(zone)
-        highest_set_point_temperature = max(set_point_temperature, highest_set_point_temperature)
-
-    return highest_set_point_temperature
+def _get_highest_set_point_temp(location: Location) -> float:
+    zones = list(get_zones(location))
+    if not zones:
+        return -99
+    now = get_current_time(location)
+    return max(_get_active_setpoint(zone, now) for zone in zones)
 
 
-def _set_mode(new_mode, location):
-    for gateway in location.gateways.values():
-        for control_system in gateway.control_systems.values():
-            current_mode = ThermostatStatus.get_by_mode(control_system.systemModeStatus["mode"])
-            if new_mode == current_mode:
-                continue
-
-            if _is_override_enabled(control_system):
-                logger.warning("not changing thermostat (%s) mode, override is set", control_system.systemId)
-                continue
-
-            logger.debug("changing thermostat (%s) mode to '%s'", control_system.systemId, new_mode.mode)
-            control_system.set_status(new_mode.status)
+@_retry
+async def _set_control_system_mode(control_system: ControlSystem, new_mode: SystemMode) -> None:
+    await control_system.set_mode(new_mode)
 
 
-def set_normal(location):
-    if _is_normal_heating_needed(location):
-        _set_mode(ThermostatStatus.auto, location)
+async def _set_mode(new_mode: SystemMode, location: Location) -> None:
+    for control_system in get_control_systems(location):
+        current_mode = control_system.mode
+        if new_mode == current_mode:
+            continue
+
+        if _is_override_enabled(control_system):
+            logger.warning("not changing thermostat (%s) mode, override is set", control_system.id)
+            continue
+
+        logger.debug("changing thermostat (%s) mode to '%s'", control_system.id, new_mode)
+        await _set_control_system_mode(control_system, new_mode)
+
+
+async def set_normal(location: Location) -> None:
+    if await _is_normal_heating_needed(location):
+        await _set_mode(SystemMode.AUTO, location)
     else:
-        _set_mode(ThermostatStatus.eco, location)
+        await _set_mode(SystemMode.AUTO_WITH_ECO, location)
 
 
-def set_away(location):
+async def set_away(location: Location) -> None:
     desired_away_mode = _get_desired_away_mode()
-    _set_mode(desired_away_mode, location)
+    await _set_mode(desired_away_mode, location)

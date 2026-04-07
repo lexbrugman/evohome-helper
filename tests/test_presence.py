@@ -1,8 +1,8 @@
-from datetime import datetime
-from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+from aioresponses import aioresponses
 
 from evohome_helper import presence
-from freezegun import freeze_time
 
 
 def test_headers_contains_bearer_token():
@@ -13,110 +13,75 @@ def test_headers_contains_bearer_token():
     assert headers["content-type"] == "application/json"
 
 
-def test_get_data_uses_last_known_state_on_request_failure(monkeypatch):
-    ok_response = SimpleNamespace(
-        ok=True,
-        json=lambda: {
+async def test_get_data_returns_parsed_response():
+    with aioresponses() as m:
+        m.get("http://ha.local/api/states/person.a", payload={
             "state": "home",
             "attributes": {"seconds_since_last_seen": 12},
-        },
-    )
+        })
+        result = await presence._get_data("person.a")
 
-    monkeypatch.setattr("evohome_helper.presence.requests.get", lambda *args, **kwargs: ok_response)
-
-    with freeze_time(datetime.fromtimestamp(100)):
-        first = presence._get_data("person.a")
-        assert first == {"is_someone_home": True, "seconds_since_last_seen": 12}
-
-    def failing_get(*_args, **_kwargs):
-        raise RuntimeError("network down")
-
-    monkeypatch.setattr("evohome_helper.presence.requests.get", failing_get)
-
-    with freeze_time(datetime.fromtimestamp(100)):
-        second = presence._get_data("person.a")
-
-    assert second == first
+    assert result == {"is_someone_home": True, "seconds_since_last_seen": 12}
 
 
-def test_get_data_default_when_entity_never_seen(monkeypatch):
-    monkeypatch.setattr("evohome_helper.presence.requests.get", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("boom")))
+async def test_get_data_uses_last_known_state_on_request_failure():
+    with aioresponses() as m:
+        m.get("http://ha.local/api/states/person.a", payload={
+            "state": "home",
+            "attributes": {"seconds_since_last_seen": 12},
+        })
+        await presence._get_data("person.a")
 
-    with freeze_time(datetime.fromtimestamp(100)):
-        value = presence._get_data("person.unknown")
+        m.get("http://ha.local/api/states/person.a", status=500)
+        result = await presence._get_data("person.a")
 
-    assert value == {"is_someone_home": False, "seconds_since_last_seen": 0}
+    assert result == {"is_someone_home": True, "seconds_since_last_seen": 12}
 
 
-def test_is_someone_home_and_away_grace_period(monkeypatch):
+async def test_get_data_default_when_entity_never_seen():
+    with aioresponses() as m:
+        m.get("http://ha.local/api/states/person.unknown", status=500)
+        result = await presence._get_data("person.unknown")
+
+    assert result == {"is_someone_home": False, "seconds_since_last_seen": 0}
+
+
+async def test_is_someone_home_and_away_grace_period(monkeypatch):
     fake_data = {
         "person.a": {"is_someone_home": False, "seconds_since_last_seen": 100},
         "person.b": {"is_someone_home": True, "seconds_since_last_seen": 9999},
     }
+    monkeypatch.setattr("evohome_helper.presence._get_data", AsyncMock(side_effect=lambda eid: fake_data[eid]))
 
-    monkeypatch.setattr("evohome_helper.presence._get_data", lambda entity_id: fake_data[entity_id])
-
-    assert presence.is_someone_home() is True
-    assert presence.is_in_away_grace_period() is True
+    assert await presence.is_someone_home() is True
+    assert await presence.is_in_away_grace_period() is True
 
 
-def test_is_in_away_grace_period_false_when_all_expired(monkeypatch):
+async def test_is_in_away_grace_period_false_when_all_expired(monkeypatch):
     fake_data = {
         "person.a": {"is_someone_home": False, "seconds_since_last_seen": 9999},
         "person.b": {"is_someone_home": False, "seconds_since_last_seen": None},
     }
+    monkeypatch.setattr("evohome_helper.presence._get_data", AsyncMock(side_effect=lambda eid: fake_data[eid]))
 
-    monkeypatch.setattr("evohome_helper.presence._get_data", lambda entity_id: fake_data[entity_id])
-
-    assert presence.is_in_away_grace_period() is False
+    assert await presence.is_in_away_grace_period() is False
 
 
-def test_is_in_away_grace_period_true_when_last_seen_is_zero(monkeypatch):
+async def test_is_in_away_grace_period_true_when_last_seen_is_zero(monkeypatch):
     fake_data = {
         "person.a": {"is_someone_home": False, "seconds_since_last_seen": 0},
         "person.b": {"is_someone_home": False, "seconds_since_last_seen": 9999},
     }
+    monkeypatch.setattr("evohome_helper.presence._get_data", AsyncMock(side_effect=lambda eid: fake_data[eid]))
 
-    monkeypatch.setattr("evohome_helper.presence._get_data", lambda entity_id: fake_data[entity_id])
-
-    assert presence.is_in_away_grace_period() is True
+    assert await presence.is_in_away_grace_period() is True
 
 
-def test_is_in_away_grace_period_none_does_not_count_toward_grace(monkeypatch):
+async def test_is_in_away_grace_period_none_does_not_count_toward_grace(monkeypatch):
     fake_data = {
         "person.a": {"is_someone_home": False, "seconds_since_last_seen": None},
         "person.b": {"is_someone_home": False, "seconds_since_last_seen": 9999},
     }
+    monkeypatch.setattr("evohome_helper.presence._get_data", AsyncMock(side_effect=lambda eid: fake_data[eid]))
 
-    monkeypatch.setattr("evohome_helper.presence._get_data", lambda entity_id: fake_data[entity_id])
-
-    assert presence.is_in_away_grace_period() is False
-
-
-def test_get_data_cache_hit_and_refresh(monkeypatch):
-    state = {"calls": 0}
-
-    def fake_get(*_args, **_kwargs):
-        state["calls"] += 1
-        return SimpleNamespace(
-            ok=True,
-            json=lambda: {
-                "state": "home" if state["calls"] == 1 else "not_home",
-                "attributes": {"seconds_since_last_seen": state["calls"]},
-            },
-        )
-
-    monkeypatch.setattr("evohome_helper.presence.requests.get", fake_get)
-
-    with freeze_time(datetime.fromtimestamp(100)):
-        first = presence._get_data("person.a")
-        second = presence._get_data("person.a")
-
-    assert first == second
-    assert state["calls"] == 1
-
-    with freeze_time(datetime.fromtimestamp(1000)):
-        third = presence._get_data("person.a")
-
-    assert third == {"is_someone_home": False, "seconds_since_last_seen": 2}
-    assert state["calls"] == 2
+    assert await presence.is_in_away_grace_period() is False

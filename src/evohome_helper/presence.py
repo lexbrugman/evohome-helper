@@ -1,51 +1,44 @@
+import aiohttp
 import logging
-import requests
 import settings
-
-from evohome_helper.func_tools import return_cache
 
 logger = logging.getLogger(__name__)
 last_known_presence_state = {}
 
 
-def is_someone_home():
+async def is_someone_home() -> bool:
     for entity_id in settings.HOMEASSISTANT_PRESENCE_ENTITIES:
-        if _get_data(entity_id).get("is_someone_home"):
+        data = await _get_data(entity_id)
+        if data.get("is_someone_home"):
             return True
 
     return False
 
 
-def is_in_away_grace_period():
+async def is_in_away_grace_period() -> bool:
     for entity_id in settings.HOMEASSISTANT_PRESENCE_ENTITIES:
-        seconds_since_last_seen = _get_data(entity_id).get("seconds_since_last_seen")
+        data = await _get_data(entity_id)
+        seconds_since_last_seen = data.get("seconds_since_last_seen")
         if seconds_since_last_seen is not None and seconds_since_last_seen <= settings.PRESENCE_LAST_HOME_GRACE_TIME:
             return True
 
     return False
 
 
-@return_cache(refresh_interval=60)
-def _get_data(entity_id):
+async def _get_data(entity_id: str) -> dict:
     url = f"{settings.HOMEASSISTANT_URL}/api/states/{entity_id}"
 
     try:
-        response = requests.get(
-            url,
-            headers=_headers(),
-            timeout=5,
-        )
-        if response.ok:
-            response_data = response.json()
-            attributes = response_data.get("attributes", {})
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=_headers(), timeout=aiohttp.ClientTimeout(total=5)) as response:
+                response.raise_for_status()
+                response_data = await response.json()
+                attributes = response_data.get("attributes", {})
 
-            someone_home = response_data.get("state") == "home"
-            seconds_since_last_seen = attributes.get("seconds_since_last_seen")
-            
-            last_known_presence_state[entity_id] = {
-                "is_someone_home": someone_home,
-                "seconds_since_last_seen": seconds_since_last_seen,
-            }
+                last_known_presence_state[entity_id] = {
+                    "is_someone_home": response_data.get("state") == "home",
+                    "seconds_since_last_seen": attributes.get("seconds_since_last_seen"),
+                }
     except Exception:
         logger.exception("failed getting presence information")
 
@@ -55,7 +48,7 @@ def _get_data(entity_id):
     })
 
 
-def _headers():
+def _headers() -> dict:
     return {
         "Authorization": f"Bearer {settings.HOMEASSISTANT_TOKEN}",
         "content-type": "application/json",

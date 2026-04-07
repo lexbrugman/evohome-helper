@@ -1,88 +1,76 @@
-import main
 import pytest
-
-from evohome_helper import evohome
-from evohome_helper.evohome import ThermostatStatus
 from freezegun import freeze_time
+from unittest.mock import AsyncMock
+
+from evohomeasync2.schemas import SystemMode
+
+import main
+from evohome_helper import evohome
 
 
-def _prepare_common(monkeypatch, state):
-    monkeypatch.setattr("settings.EVOHOME_LOCATION_NAME", state["location"].name)
-
-
-def _prepare_normal_mode_conditions(monkeypatch, state):
-    state["zone"].set_weekly_schedule(setpoint=20, time_of_day="07:00:00")
+def _patch_normal_mode_conditions(monkeypatch):
     monkeypatch.setattr("settings.AUTO_ECO_ENABLED", True)
     monkeypatch.setattr("settings.AUTO_ECO_OUTSIDE_TEMP_THRESHOLD", 14)
     monkeypatch.setattr("settings.AUTO_ECO_INSIDE_TEMP_DIFF", 2)
-    monkeypatch.setattr("evohome_helper.evohome.weather.get_temperature", lambda: 10)
+    monkeypatch.setattr("evohome_helper.evohome.weather.get_current_temperature", AsyncMock(return_value=10))
 
 
-def _prepare_schedule_grace_state(state, *, in_grace):
+def _grace_schedule(evohome_factory, *, in_grace):
     if in_grace:
-        state["zone"].set_weekly_schedule(setpoint=20, time_of_day="07:55:00")
-    else:
-        state["zone"].set_weekly_schedule(setpoint=20, time_of_day="06:00:00")
+        return evohome_factory.uniform_schedule(20, "07:55:00")
+    return evohome_factory.uniform_schedule(20, "06:00:00")
 
 
 @pytest.mark.parametrize(
-    "someone_home,away_grace_active,schedule_grace_active,start_mode,expected_status,clock",
+    "someone_home,away_grace_active,schedule_grace_active,start_mode,expected_mode,clock",
     [
-        (True, True, False, ThermostatStatus.eco.mode, ThermostatStatus.auto.status, "2024-04-10 08:00:00"),
-        (False, True, True, ThermostatStatus.eco.mode, ThermostatStatus.auto.status, "2024-04-07 08:00:00"),
-        (False, False, False, ThermostatStatus.auto.mode, ThermostatStatus.away.status, "2024-04-10 08:00:00"),
+        (True, True, False, SystemMode.AUTO_WITH_ECO, SystemMode.AUTO, "2024-04-10 08:00:00"),
+        (False, True, True, SystemMode.AUTO_WITH_ECO, SystemMode.AUTO, "2024-04-07 08:00:00"),
+        (False, False, False, SystemMode.AUTO, SystemMode.AWAY, "2024-04-10 08:00:00"),
     ],
 )
-def test_set_thermostat_mode_public_scenarios(
+async def test_set_thermostat_mode_public_scenarios(
     monkeypatch,
     evohome_client,
+    evohome_factory,
     someone_home,
     away_grace_active,
     schedule_grace_active,
     start_mode,
-    expected_status,
+    expected_mode,
     clock,
 ):
-    _client, state = evohome_client(system_mode=start_mode)
-    _prepare_common(monkeypatch, state)
-    _prepare_normal_mode_conditions(monkeypatch, state)
-    _prepare_schedule_grace_state(state, in_grace=schedule_grace_active)
+    state = evohome_client(system_mode=start_mode, schedule=_grace_schedule(evohome_factory, in_grace=schedule_grace_active))
+    monkeypatch.setattr("settings.EVOHOME_LOCATION_NAME", state.location.name)
+    _patch_normal_mode_conditions(monkeypatch)
 
-    monkeypatch.setattr("evohome_helper.presence.is_someone_home", lambda: someone_home)
-    monkeypatch.setattr("evohome_helper.presence.is_in_away_grace_period", lambda: away_grace_active)
+    monkeypatch.setattr("evohome_helper.presence.is_someone_home", AsyncMock(return_value=someone_home))
+    monkeypatch.setattr("evohome_helper.presence.is_in_away_grace_period", AsyncMock(return_value=away_grace_active))
 
     with freeze_time(clock):
-        main.set_thermostat_mode()
+        await main.determine_and_set_thermostat_mode()
 
-    state["control_system"].set_status.assert_called_once_with(expected_status)
-    assert state["control_system"].systemModeStatus["mode"] == (
-        ThermostatStatus.get_by_status(expected_status).mode
-    )
+    state.control_system.set_mode.assert_awaited_once_with(expected_mode)
+    assert state.control_system.mode == expected_mode
 
 
-def test_set_thermostat_mode_multiple_zones_keeps_normal(monkeypatch, evohome_factory):
-    early_zone = evohome_factory.zone(name="Hall")
-    early_zone.set_weekly_schedule(setpoint=19, time_of_day="06:00:00")
-    grace_zone = evohome_factory.zone(name="Living")
-    grace_zone.set_weekly_schedule(setpoint=21, time_of_day="07:55:00")
+async def test_set_thermostat_mode_multiple_zones_keeps_normal(monkeypatch, evohome_factory):
+    early_zone = evohome_factory.zone(name="Hall", schedule=evohome_factory.uniform_schedule(19, "06:00:00"))
+    grace_zone = evohome_factory.zone(name="Living", schedule=evohome_factory.uniform_schedule(21, "07:55:00"))
 
     control_system = evohome_factory.control_system(
-        mode=ThermostatStatus.eco.mode,
-        zones={"z1": early_zone, "z2": grace_zone},
+        mode=SystemMode.AUTO_WITH_ECO,
+        zones=[early_zone, grace_zone],
     )
-    location = evohome_factory.location(control_systems={"c1": control_system})
+    location = evohome_factory.location(control_systems=[control_system])
 
-    monkeypatch.setattr("evohome_helper.evohome.get_location", lambda location_name=None: location)
-    monkeypatch.setattr("settings.EVOHOME_LOCATION_NAME", location.name)
-    monkeypatch.setattr("settings.AUTO_ECO_ENABLED", True)
-    monkeypatch.setattr("settings.AUTO_ECO_OUTSIDE_TEMP_THRESHOLD", 14)
-    monkeypatch.setattr("settings.AUTO_ECO_INSIDE_TEMP_DIFF", 2)
-    monkeypatch.setattr("evohome_helper.evohome.weather.get_temperature", lambda: 10)
-    monkeypatch.setattr("evohome_helper.presence.is_someone_home", lambda: False)
-    monkeypatch.setattr("evohome_helper.presence.is_in_away_grace_period", lambda: True)
+    monkeypatch.setattr("evohome_helper.evohome.get_location", AsyncMock(return_value=location))
+    _patch_normal_mode_conditions(monkeypatch)
+    monkeypatch.setattr("evohome_helper.presence.is_someone_home", AsyncMock(return_value=False))
+    monkeypatch.setattr("evohome_helper.presence.is_in_away_grace_period", AsyncMock(return_value=True))
 
     with freeze_time("2024-04-07 08:00:00"):
-        main.set_thermostat_mode()
+        await main.determine_and_set_thermostat_mode()
 
-    control_system.set_status.assert_called_once_with(ThermostatStatus.auto.status)
-    assert control_system.systemModeStatus["mode"] == ThermostatStatus.auto.mode
+    control_system.set_mode.assert_awaited_once_with(SystemMode.AUTO)
+    assert control_system.mode == SystemMode.AUTO

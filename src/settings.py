@@ -22,3 +22,5 @@ PRESENCE_HEATING_SCHEDULE_GRACE_TIME = add_on_config["presence"]["heating_schedu
 AUTO_ECO_ENABLED = add_on_config["auto_eco"]["enabled"]
 AUTO_ECO_OUTSIDE_TEMP_THRESHOLD = add_on_config["auto_eco"]["outside_temp_threshold"]
 AUTO_ECO_INSIDE_TEMP_DIFF = add_on_config["auto_eco"]["inside_temp_diff"]
+
+INTERVAL = add_on_config["interval"]
