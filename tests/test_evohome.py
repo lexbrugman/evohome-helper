@@ -148,6 +148,30 @@ def test_get_zone_switch_points_week_boundary_sunday_to_monday(evohome_factory):
     assert sunday_sps[0][0] == datetime(2024, 4, 7, 7, 0, 0)  # last Sunday, not next
 
 
+def test_get_active_setpoint_returns_none_when_zone_has_no_schedule(evohome_factory):
+    state = evohome_factory.complete_state(schedule=[])
+
+    now = datetime(2024, 4, 10, 8, 0, 0)
+    assert evohome._get_active_setpoint(state.zone, now) is None
+
+
+def test_get_highest_set_point_temp_returns_none_when_no_valid_setpoints(evohome_factory):
+    state = evohome_factory.complete_state(schedule=[])
+
+    with freeze_time("2024-04-10 08:00:00"):
+        assert evohome._get_highest_set_point_temp(state.location) is None
+
+
+async def test_is_normal_heating_needed_when_no_valid_active_setpoint(monkeypatch, evohome_factory):
+    state = evohome_factory.complete_state(schedule=[])
+
+    monkeypatch.setattr("settings.AUTO_ECO_ENABLED", True)
+    monkeypatch.setattr("evohome_helper.evohome.weather.get_current_temperature", AsyncMock(return_value=25))
+
+    with freeze_time("2024-04-10 08:00:00"):
+        assert await evohome._is_normal_heating_needed(state.location) is True
+
+
 def test_current_zone_switch_point_ignores_off_period(evohome_factory):
     """When the current scheduled period is off, return the last heating switchpoint."""
     sp_heat = evohome_factory.switchpoint("11:55:00", 20)
@@ -162,6 +186,14 @@ def test_current_zone_switch_point_ignores_off_period(evohome_factory):
     assert sp_start == datetime(2024, 4, 7, 11, 55, 0)
 
 
+def test_get_last_heating_switchpoint_returns_none_when_zone_always_off(monkeypatch, evohome_factory):
+    state = evohome_factory.complete_state(schedule=evohome_factory.uniform_schedule(15, "11:55:00"))
+    monkeypatch.setattr("settings.EVOHOME_OFF_TEMP_THRESHOLD", 15)
+
+    now = datetime(2024, 4, 7, 12, 10, 0)
+    assert evohome._get_last_heating_switchpoint(state.zone, now) is None
+
+
 def test_is_in_schedule_grace_period_triggered_after_off_within_grace(monkeypatch, evohome_factory):
     """Grace period uses last heating start even if current period is off."""
     sp_heat = evohome_factory.switchpoint("11:55:00", 20)
@@ -174,6 +206,15 @@ def test_is_in_schedule_grace_period_triggered_after_off_within_grace(monkeypatc
 
     with freeze_time("2024-04-07 12:09:00"):  # 14 minutes after heat started, within 15-min grace
         assert evohome.is_in_schedule_grace_period(state.location) is True
+
+
+def test_is_in_schedule_grace_period_false_when_zone_always_off(monkeypatch, evohome_factory):
+    state = evohome_factory.complete_state(schedule=evohome_factory.uniform_schedule(15, "11:55:00"))
+    monkeypatch.setattr("settings.PRESENCE_HEATING_SCHEDULE_GRACE_TIME", 900)
+    monkeypatch.setattr("settings.EVOHOME_OFF_TEMP_THRESHOLD", 15)
+
+    with freeze_time("2024-04-07 12:00:00"):
+        assert evohome.is_in_schedule_grace_period(state.location) is False
 
 
 def test_get_zones_filters_faulty_zones(evohome_factory):

@@ -1,5 +1,4 @@
 import asyncio
-import backoff
 import logging
 import settings
 
@@ -7,11 +6,17 @@ from datetime import datetime, timedelta
 from evohomeasync2 import EvohomeClientOld as EvohomeClient, ControlSystem, Location, Zone
 from evohomeasync2.schemas import SystemMode, ZoneMode
 from evohome_helper import weather
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 from typing import Generator
 
 logger = logging.getLogger(__name__)
 _evohome_client = None
-_retry = backoff.on_exception(wait_gen=backoff.expo, exception=Exception, max_tries=6)
+_retry = retry(
+    retry=retry_if_exception_type(Exception),
+    wait=wait_exponential(),
+    stop=stop_after_attempt(6),
+    reraise=True,
+)
 
 _AWAY_MODE_MAP = {
     "auto": SystemMode.AUTO,
@@ -102,20 +107,24 @@ def _get_zone_switch_points(zone: Zone, now: datetime) -> list[tuple[datetime, f
     return result
 
 
-def _get_last_heating_switchpoint(zone: Zone, now: datetime) -> tuple[datetime, float]:
-    last_heating_datetime = now - timedelta(weeks=52)
-    last_heating_temperature = -99.0
+def _get_last_heating_switchpoint(zone: Zone, now: datetime) -> tuple[datetime, float] | None:
+    last_heating_datetime = None
+    last_heating_temperature = None
     for switchpoint_datetime, switchpoint_temperature in _get_zone_switch_points(zone, now):
         if not _is_considered_off(switchpoint_temperature):
             last_heating_datetime = switchpoint_datetime
             last_heating_temperature = switchpoint_temperature
+
+    if last_heating_datetime is None or last_heating_temperature is None:
+        return None
+
     return last_heating_datetime, last_heating_temperature
 
 
-def _get_active_setpoint(zone: Zone, now: datetime) -> float:
+def _get_active_setpoint(zone: Zone, now: datetime) -> float | None:
     switch_points = _get_zone_switch_points(zone, now)
     if not switch_points:
-        return -99.0
+        return None
     return switch_points[-1][1]
 
 
@@ -124,7 +133,12 @@ def is_in_schedule_grace_period(location: Location) -> bool:
 
     zones = get_zones(location)
     for zone in zones:
-        switch_point_start, switch_point_temperature = _get_last_heating_switchpoint(zone, now)
+        switch_point = _get_last_heating_switchpoint(zone, now)
+        if switch_point is None:
+            logger.debug("no scheduled heating switch point found for %s", zone.name)
+            continue
+
+        switch_point_start, switch_point_temperature = switch_point
         logger.debug(
             "last scheduled switch point for %s was at: %s (%s degrees celsius)",
             zone.name,
@@ -177,8 +191,8 @@ async def _is_normal_heating_needed(location: Location) -> bool:
     inside_temp_diff = settings.AUTO_ECO_INSIDE_TEMP_DIFF
     highest_set_point_temp = _get_highest_set_point_temp(location)
 
-    # all zones are off?
-    if _is_considered_off(highest_set_point_temp):
+    # no valid active setpoint, or all zones are off?
+    if highest_set_point_temp is None or _is_considered_off(highest_set_point_temp):
         return True
 
     # can we fetch a valid temperature?
@@ -198,12 +212,14 @@ async def _is_normal_heating_needed(location: Location) -> bool:
     return outside_current_temp + inside_temp_diff < highest_set_point_temp
 
 
-def _get_highest_set_point_temp(location: Location) -> float:
+def _get_highest_set_point_temp(location: Location) -> float | None:
     zones = list(get_zones(location))
     if not zones:
-        return -99
+        return None
     now = get_current_time(location)
-    return max(_get_active_setpoint(zone, now) for zone in zones)
+    active_setpoints = (_get_active_setpoint(zone, now) for zone in zones)
+    valid_setpoints = filter(lambda setpoint: setpoint is not None, active_setpoints)
+    return max(valid_setpoints, default=None)
 
 
 @_retry
