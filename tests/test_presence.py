@@ -5,14 +5,6 @@ from aioresponses import aioresponses
 from evohome_helper import presence
 
 
-def test_headers_contains_bearer_token():
-    headers = presence._headers()
-
-    assert "Authorization" in headers
-    assert headers["Authorization"].startswith("Bearer ")
-    assert headers["content-type"] == "application/json"
-
-
 async def test_get_data_returns_parsed_response():
     with aioresponses() as m:
         m.get("http://ha.local/api/states/person.a", payload={

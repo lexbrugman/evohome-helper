@@ -74,7 +74,7 @@ async def test_set_mode_updates_control_system_when_allowed(evohome_factory):
     [
         (False, 20, 30, True),
         (True, 5, 30, True),
-        (True, 20, -99, True),
+        (True, 20, None, True),
         (True, 20, 13, True),
         (True, 20, 20, False),
         (True, 20, 17, True),
@@ -227,22 +227,6 @@ def test_get_zones_filters_faulty_zones(evohome_factory):
     assert zones == [state.zone]
 
 
-async def test_get_location_uses_default_name(monkeypatch, evohome_client):
-    monkeypatch.setattr("settings.EVOHOME_LOCATION_NAME", "MyHome")
-    state = evohome_client(location_name="MyHome")
-
-    loc = await evohome.get_location()
-
-    assert loc is state.location
-
-
-async def test_get_location_raises_for_missing_location(evohome_client):
-    evohome_client(location_name="KnownLocation")
-
-    with pytest.raises(evohome.LocationNotFound):
-        await evohome.get_location("unknown")
-
-
 async def test_set_normal_selects_auto_or_eco(monkeypatch, evohome_factory):
     monkeypatch.setattr("settings.AUTO_ECO_ENABLED", True)
     monkeypatch.setattr("settings.AUTO_ECO_OUTSIDE_TEMP_THRESHOLD", 14)
@@ -267,22 +251,3 @@ async def test_set_away_uses_configured_away_mode(monkeypatch, evohome_factory):
     await evohome.set_away(state.location)
 
     state.control_system.set_mode.assert_awaited_once_with(SystemMode.CUSTOM)
-
-
-async def test_client_returns_existing_client():
-    fake_client = object()
-    evohome._evohome_client = fake_client
-
-    result = await evohome._client()
-
-    assert result is fake_client
-
-
-async def test_client_creates_and_initializes(monkeypatch):
-    mock_client = AsyncMock()
-    monkeypatch.setattr("evohome_helper.evohome.EvohomeClient", lambda *a, **kw: mock_client)
-
-    result = await evohome._client()
-
-    mock_client.update.assert_awaited_once_with(dont_update_status=True)
-    assert result is mock_client

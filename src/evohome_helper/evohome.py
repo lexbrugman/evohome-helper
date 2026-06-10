@@ -1,22 +1,14 @@
-import asyncio
 import logging
 import settings
 
 from datetime import datetime, timedelta
-from evohomeasync2 import EvohomeClientOld as EvohomeClient, ControlSystem, Location, Zone
+from evohomeasync2 import ControlSystem, Location, Zone
 from evohomeasync2.schemas import SystemMode, ZoneMode
+from evohome_helper import evohome_client
 from evohome_helper import weather
-from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 from typing import Generator
 
 logger = logging.getLogger(__name__)
-_evohome_client = None
-_retry = retry(
-    retry=retry_if_exception_type(Exception),
-    wait=wait_exponential(),
-    stop=stop_after_attempt(6),
-    reraise=True,
-)
 
 _AWAY_MODE_MAP = {
     "auto": SystemMode.AUTO,
@@ -30,60 +22,8 @@ _AWAY_MODE_MAP = {
 _DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 
 
-class LocationNotFound(Exception):
-    def __init__(self, location_name: str):
-        super().__init__(f"the location '{location_name}' does not exist in the evohome account")
-
-
-@_retry
-async def _client() -> EvohomeClient:
-    global _evohome_client
-
-    if _evohome_client is None:
-        new_client = EvohomeClient(
-            settings.EVOHOME_USERNAME,
-            settings.EVOHOME_PASSWORD,
-        )
-        await new_client.update(dont_update_status=True)
-        _evohome_client = new_client
-
-    return _evohome_client
-
-
 def get_current_time(location: Location) -> datetime:
     return location.now().replace(microsecond=0)
-
-
-def get_control_systems(location: Location) -> Generator[ControlSystem, None, None]:
-    for gateway in location.gateways:
-        for control_system in gateway.systems:
-            yield control_system
-
-
-@_retry
-async def _update_location(location: Location) -> None:
-    await location.update()
-
-
-@_retry
-async def _fetch_schedules(system: ControlSystem) -> None:
-    await system.get_schedules()
-
-
-async def get_location(location_name: str = None) -> Location:
-    if not location_name:
-        location_name = settings.EVOHOME_LOCATION_NAME
-
-    client = await _client()
-    for location in client.locations:
-        if location.name == location_name:
-            await _update_location(location)
-            await asyncio.gather(
-                *[_fetch_schedules(system) for system in get_control_systems(location)],
-            )
-            return location
-
-    raise LocationNotFound(location_name)
 
 
 def _switchpoint_to_datetime(day_of_week: str, time_of_day: str, now: datetime) -> datetime:
@@ -154,7 +94,7 @@ def is_in_schedule_grace_period(location: Location) -> bool:
 
 
 def get_zones(location: Location) -> Generator[Zone, None, None]:
-    for control_system in get_control_systems(location):
+    for control_system in evohome_client.get_control_systems(location):
         for zone in control_system.zones:
             if zone.active_faults:
                 continue
@@ -197,7 +137,7 @@ async def _is_normal_heating_needed(location: Location) -> bool:
 
     # can we fetch a valid temperature?
     outside_current_temp = await weather.get_current_temperature()
-    if outside_current_temp <= -99:
+    if outside_current_temp is None:
         return True
 
     logger.debug(
@@ -222,13 +162,8 @@ def _get_highest_set_point_temp(location: Location) -> float | None:
     return max(valid_setpoints, default=None)
 
 
-@_retry
-async def _set_control_system_mode(control_system: ControlSystem, new_mode: SystemMode) -> None:
-    await control_system.set_mode(new_mode)
-
-
 async def _set_mode(new_mode: SystemMode, location: Location) -> None:
-    for control_system in get_control_systems(location):
+    for control_system in evohome_client.get_control_systems(location):
         current_mode = control_system.mode
         if new_mode == current_mode:
             continue
@@ -238,7 +173,7 @@ async def _set_mode(new_mode: SystemMode, location: Location) -> None:
             continue
 
         logger.debug("changing thermostat (%s) mode to '%s'", control_system.id, new_mode)
-        await _set_control_system_mode(control_system, new_mode)
+        await evohome_client.set_system_mode(control_system, new_mode)
 
 
 async def set_normal(location: Location) -> None:

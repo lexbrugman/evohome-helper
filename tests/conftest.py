@@ -17,6 +17,7 @@ if "settings" not in sys.modules:
         EVOHOME_LOCATION_NAME="Home",
         EVOHOME_OFF_TEMP_THRESHOLD=5,
         EVOHOME_AWAY_MODE="away",
+        EVOHOME_TOKEN_CACHE_PATH="/nonexistent/evohome_token_cache.json",
         AUTO_ECO_ENABLED=True,
         AUTO_ECO_OUTSIDE_TEMP_THRESHOLD=14,
         AUTO_ECO_INSIDE_TEMP_DIFF=2,
@@ -65,12 +66,10 @@ class FakeControlSystem:
 
     def __post_init__(self):
         self.set_mode = AsyncMock(side_effect=self._do_set_mode)
+        self.get_schedules = AsyncMock()
 
     async def _do_set_mode(self, new_mode):
         self.mode = new_mode
-
-    async def get_schedules(self):
-        pass
 
 
 @dataclass
@@ -151,23 +150,29 @@ def evohome_factory():
 
 
 @pytest.fixture
-def evohome_client():
-    from evohome_helper import evohome
+def installed_evohome_client():
+    from evohome_helper import evohome_client
 
     def _build(*, location_name="Home", **state_kwargs):
         state = EvohomeFactory.complete_state(location_name=location_name, **state_kwargs)
         client = FakeEvohomeClient(locations=[state.location])
-        evohome._evohome_client = client
+        evohome_client._evohome_client = client
         return state
 
     return _build
 
 
 @pytest.fixture(autouse=True)
-def reset_state():
-    from evohome_helper import presence, evohome
+async def reset_state():
+    from evohome_helper import evohome_client, homeassistant, presence
 
     presence.last_known_presence_state.clear()
-    evohome._evohome_client = None
+    evohome_client._evohome_client = None
+    evohome_client._schedule_refresh_times.clear()
+
+    yield
+
+    await evohome_client.close()
+    await homeassistant.close()
 
 

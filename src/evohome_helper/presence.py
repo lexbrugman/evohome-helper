@@ -1,6 +1,7 @@
-import aiohttp
 import logging
 import settings
+
+from evohome_helper import homeassistant
 
 logger = logging.getLogger(__name__)
 last_known_presence_state = {}
@@ -26,30 +27,16 @@ async def is_in_away_grace_period() -> bool:
 
 
 async def _get_data(entity_id: str) -> dict:
-    url = f"{settings.HOMEASSISTANT_URL}/api/states/{entity_id}"
+    entity_state = await homeassistant.get_entity_state(entity_id)
+    if entity_state is not None:
+        attributes = entity_state.get("attributes", {})
 
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, headers=_headers(), timeout=aiohttp.ClientTimeout(total=5)) as response:
-                response.raise_for_status()
-                response_data = await response.json()
-                attributes = response_data.get("attributes", {})
-
-                last_known_presence_state[entity_id] = {
-                    "is_someone_home": response_data.get("state") == "home",
-                    "seconds_since_last_seen": attributes.get("seconds_since_last_seen"),
-                }
-    except Exception:
-        logger.exception("failed getting presence information")
+        last_known_presence_state[entity_id] = {
+            "is_someone_home": entity_state.get("state") == "home",
+            "seconds_since_last_seen": attributes.get("seconds_since_last_seen"),
+        }
 
     return last_known_presence_state.setdefault(entity_id, {
         "is_someone_home": False,
         "seconds_since_last_seen": 0,
     })
-
-
-def _headers() -> dict:
-    return {
-        "Authorization": f"Bearer {settings.HOMEASSISTANT_TOKEN}",
-        "content-type": "application/json",
-    }
