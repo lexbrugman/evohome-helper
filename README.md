@@ -10,7 +10,7 @@ Depends on Home Assistant for presence and weather information.
 
 ## Features
 
-- Presence detection (switches to 'Custom' when no-one is home)
+- Presence detection (switches to the configured mode when no-one is home)
 - Use eco mode with warm weather to save energy
 
 ## Install via Home Assistant
@@ -19,3 +19,19 @@ Depends on Home Assistant for presence and weather information.
 2. Open the menu (**⋮**) and choose **Repositories**.
 3. Add <https://github.com/lexbrugman/ha-apps> as a repository.
 4. Find **Evohome Helper** in the store and install it.
+
+
+## Development
+
+This project uses [Poetry](https://python-poetry.org/) for dependency management.
+
+```bash
+poetry install --with dev
+poetry run pytest
+```
+
+Run the service locally with:
+
+```bash
+poetry run python src/main.py
+```

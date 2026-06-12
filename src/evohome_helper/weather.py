@@ -1,36 +1,22 @@
 import logging
-import requests
 import settings
 
-from evohome_helper.func_tools import return_cache
+from evohome_helper import homeassistant
 
 logger = logging.getLogger(__name__)
 
 
-@return_cache(refresh_interval=1800)
-def get_temperature():
-    current_temperature = -99
-
+async def get_current_temperature() -> float | None:
     ha_weather_entity = settings.HOMEASSISTANT_AUTO_ECO_WEATHER_ENTITY
     if ha_weather_entity is None:
-        return current_temperature
+        return None
 
-    url = f"{settings.HOMEASSISTANT_URL}/api/states/{ha_weather_entity}"
-    headers = {
-        "Authorization": f"Bearer {settings.HOMEASSISTANT_TOKEN}",
-        "content-type": "application/json",
-    }
+    entity_state = await homeassistant.get_entity_state(ha_weather_entity)
+    if entity_state is None:
+        return None
 
-    try:
-        response = requests.get(
-            url,
-            headers=headers,
-            timeout=5,
-        )
-        if response.ok:
-            weather_data = response.json().get("attributes", {})
-            current_temperature = weather_data.get("temperature", current_temperature)
-    except Exception:
-        logger.exception("failed getting weather information")
+    current_temperature = entity_state.get("attributes", {}).get("temperature")
+    if current_temperature is None:
+        return None
 
     return round(current_temperature, 1)
