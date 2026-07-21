@@ -16,7 +16,7 @@ jobs:
         uses: actions/checkout@v6.0.2
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v6.3.0
         with:
           python-version: '3.13'
 
@@ -53,10 +53,12 @@ jobs:
           echo "artifact_url=${{ github.server_url }}/${{ github.repository }}/archive/${{ github.sha }}.tar.gz" >> $GITHUB_OUTPUT
 
       - name: Trigger app build
-        uses: benc-uk/workflow-dispatch@v1
-        with:
-          workflow: builder.yaml
-          repo: ${{ github.repository_owner }}/ha-apps
-          ref: master
-          inputs: '{ "app": "${{ steps.build_data.outputs.app }}", "version": "${{ steps.build_data.outputs.version }}", "artifact_url": "${{ steps.build_data.outputs.artifact_url }}" }'
-          token: '${{ secrets.HA_APPS_PAT }}'
+        env:
+          GH_TOKEN: ${{ secrets.HA_APPS_PAT }}
+        run: |
+          gh workflow run builder.yaml \
+            --repo ${{ github.repository_owner }}/ha-apps \
+            --ref master \
+            -f app=${{ steps.build_data.outputs.app }} \
+            -f version=${{ steps.build_data.outputs.version }} \
+            -f artifact_url=${{ steps.build_data.outputs.artifact_url }}
