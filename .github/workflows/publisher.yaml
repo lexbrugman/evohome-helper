@@ -7,18 +7,22 @@ on:
     tags:
       - '*'
 
+concurrency:
+  group: publisher-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   tests:
     runs-on: ubuntu-latest
     name: Test
     steps:
       - name: Check out the repository
-        uses: actions/checkout@v6.0.2
+        uses: actions/checkout@v7.0.1
 
       - name: Set up Python
-        uses: actions/setup-python@v6.3.0
+        uses: actions/setup-python@v7.0.0
         with:
-          python-version: '3.13'
+          python-version: '3.14'
 
       - name: Install dependencies
         run: |
@@ -36,7 +40,7 @@ jobs:
     if: ${{ (github.ref_type == 'branch' && github.ref_name == 'dev') || (github.ref_type == 'tag' && startsWith(github.ref_name, 'v')) }}
     steps:
       - name: Check out the repository
-        uses: actions/checkout@v6.0.2
+        uses: actions/checkout@v7.0.1
 
       - name: Prepare build data
         id: build_data
