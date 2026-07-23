@@ -1,38 +1,66 @@
-import sys
-import types
+import inspect
+
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import NamedTuple
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
+import aiohttp
 import pytest
 
-from evohomeasync2.schemas import SystemMode, ZoneMode
+from evohomeasync2 import DayOfWeek, SystemMode, ZoneMode
+from evohomeasync2.exceptions import InvalidScheduleError
+
+from evohome_helper.evohome import EvohomeController
+from evohome_helper.evohome_client import EvohomeService
+from settings import Settings
 
 
-if "settings" not in sys.modules:
-    settings = types.SimpleNamespace(
-        EVOHOME_USERNAME="user",
-        EVOHOME_PASSWORD="pass",
-        EVOHOME_LOCATION_NAME="Home",
-        EVOHOME_OFF_TEMP_THRESHOLD=5,
-        EVOHOME_AWAY_MODE="away",
-        EVOHOME_TOKEN_CACHE_PATH="/nonexistent/evohome_token_cache.json",
-        AUTO_ECO_ENABLED=True,
-        AUTO_ECO_OUTSIDE_TEMP_THRESHOLD=14,
-        AUTO_ECO_INSIDE_TEMP_DIFF=2,
-        PRESENCE_HEATING_SCHEDULE_GRACE_TIME=1800,
-        PRESENCE_LAST_HOME_GRACE_TIME=1200,
-        HOMEASSISTANT_URL="http://ha.local",
-        HOMEASSISTANT_TOKEN="token",
-        HOMEASSISTANT_AUTO_ECO_WEATHER_ENTITY="weather.home",
-        HOMEASSISTANT_PRESENCE_ENTITIES=["person.a", "person.b"],
-        INTERVAL=300,
+# aiohttp 3.14 made ClientResponse.stream_writer a required argument, which aioresponses
+# does not yet pass (fixed upstream in pnuckowski/aioresponses#288, not yet released).
+# Default it so aioresponses keeps working. The guard makes this a no-op on aiohttp < 3.14,
+# and real callers always pass stream_writer, so this never affects production code.
+# Remove once aioresponses > 0.7.9 is released.
+if "stream_writer" in inspect.signature(aiohttp.ClientResponse.__init__).parameters:
+    _orig_client_response_init = aiohttp.ClientResponse.__init__
+
+    def _client_response_init(self, *args, **kwargs):
+        kwargs.setdefault("stream_writer", Mock(output_size=0))
+        _orig_client_response_init(self, *args, **kwargs)
+
+    aiohttp.ClientResponse.__init__ = _client_response_init
+
+
+def make_settings(**overrides) -> Settings:
+    defaults = dict(
+        evohome_location_name="Home",
+        evohome_username="user",
+        evohome_password="pass",
+        evohome_off_temp_threshold=5,
+        evohome_away_mode="away",
+        evohome_token_cache_path="/nonexistent/evohome_token_cache.json",
+        homeassistant_url="http://ha.local",
+        homeassistant_token="token",
+        homeassistant_presence_entities=["person.a", "person.b"],
+        homeassistant_auto_eco_weather_entity="weather.home",
+        presence_last_home_grace_time=1200,
+        presence_heating_schedule_grace_time=1800,
+        auto_eco_enabled=True,
+        auto_eco_outside_temp_threshold=14,
+        auto_eco_inside_temp_diff=2,
+        interval=300,
     )
-    sys.modules["settings"] = settings
+    defaults.update(overrides)
+    return Settings(**defaults)
 
 
-_DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+@pytest.fixture
+def settings():
+    return make_settings()
+
+
+# DayOfWeek is Monday-first; the library returns day_of_week as a DayOfWeek enum member
+_DAY_ORDER = list(DayOfWeek)
 
 
 def _make_switchpoint(time_of_day, heat_setpoint):
@@ -40,7 +68,7 @@ def _make_switchpoint(time_of_day, heat_setpoint):
 
 
 def _make_day_schedule(day_of_week_int, switchpoints):
-    return {"day_of_week": _DAY_NAMES[day_of_week_int], "switchpoints": switchpoints}
+    return {"day_of_week": _DAY_ORDER[day_of_week_int], "switchpoints": switchpoints}
 
 
 def _uniform_schedule(setpoint=20.0, time_of_day="07:00:00"):
@@ -48,14 +76,30 @@ def _uniform_schedule(setpoint=20.0, time_of_day="07:00:00"):
     return [_make_day_schedule(d, [sp]) for d in range(7)]
 
 
-@dataclass
 class FakeZone:
-    name: str = "zone"
-    active_faults: list = field(default_factory=list)
-    mode: ZoneMode = ZoneMode.FOLLOW_SCHEDULE
-    temperature_status: dict = field(default_factory=lambda: {"temperature": 19})
-    setpoint_status: dict = field(default_factory=lambda: {"setpoint_mode": "FollowSchedule", "target_heat_temperature": 21})
-    schedule: list = field(default_factory=_uniform_schedule)
+    # not a dataclass: the real evohomeasync2.Zone.schedule is a property that RAISES
+    # when the zone has no schedule, so the fake models that rather than exposing a plain list
+    def __init__(
+        self,
+        name="zone",
+        active_faults=None,
+        mode=ZoneMode.FOLLOW_SCHEDULE,
+        temperature_status=None,
+        setpoint_status=None,
+        schedule=None,
+    ):
+        self.name = name
+        self.active_faults = [] if active_faults is None else active_faults
+        self.mode = mode
+        self.temperature_status = {"is_available": True, "temperature": 19} if temperature_status is None else temperature_status
+        self.setpoint_status = {"setpoint_mode": ZoneMode.FOLLOW_SCHEDULE, "target_heat_temperature": 21} if setpoint_status is None else setpoint_status
+        self._schedule = _uniform_schedule() if schedule is None else schedule
+
+    @property
+    def schedule(self):
+        if not self._schedule:
+            raise InvalidScheduleError(f"{self.name}: no schedule")
+        return self._schedule
 
 
 @dataclass
@@ -135,7 +179,7 @@ class EvohomeFactory:
             name="Living",
             mode=zone_mode,
             setpoint_status={"setpoint_mode": zone_mode, "target_heat_temperature": setpoint},
-            temperature_status={"temperature": 20},
+            temperature_status={"is_available": True, "temperature": 20},
             active_faults=["fault"] if with_fault else [],
             schedule=schedule if schedule is not None else EvohomeFactory.uniform_schedule(setpoint=float(setpoint)),
         )
@@ -149,30 +193,53 @@ def evohome_factory():
     return EvohomeFactory
 
 
-@pytest.fixture
-def installed_evohome_client():
-    from evohome_helper import evohome_client
+class FakeHomeAssistant:
+    """Faithful double of HomeAssistantClient: get_entity_state returns a dict, or None
+    when the entity is unknown/unavailable (an outage, a bad token, a wrong entity id)."""
 
-    def _build(*, location_name="Home", **state_kwargs):
-        state = EvohomeFactory.complete_state(location_name=location_name, **state_kwargs)
-        client = FakeEvohomeClient(locations=[state.location])
-        evohome_client._evohome_client = client
-        return state
+    def __init__(self):
+        self._states = {}
+
+    def set_state(self, entity_id, state):
+        self._states[entity_id] = state
+
+    async def get_entity_state(self, entity_id):
+        return self._states.get(entity_id)
+
+    async def close(self):
+        pass
+
+
+@pytest.fixture
+def fake_homeassistant():
+    return FakeHomeAssistant()
+
+
+@pytest.fixture
+def make_service(settings):
+    """Build an EvohomeService, optionally with its cached client pre-installed."""
+
+    def _build(config=None, locations=None, client=None):
+        service = EvohomeService(config or settings)
+        if client is not None:
+            service._client = client
+        elif locations is not None:
+            service._client = FakeEvohomeClient(locations=locations)
+        return service
 
     return _build
 
 
-@pytest.fixture(autouse=True)
-async def reset_state():
-    from evohome_helper import evohome_client, homeassistant, presence
+@pytest.fixture
+def controller_factory(settings):
+    """Build an EvohomeController wired to a real EvohomeService (thin passthrough to the
+    fake control systems) and a stubbed weather service returning `outside_temp`."""
 
-    presence.last_known_presence_state.clear()
-    evohome_client._evohome_client = None
-    evohome_client._schedule_refresh_times.clear()
+    def _build(config=None, outside_temp=None):
+        config = config or settings
+        service = EvohomeService(config)
+        weather = Mock()
+        weather.get_current_temperature = AsyncMock(return_value=outside_temp)
+        return EvohomeController(service, weather, config)
 
-    yield
-
-    await evohome_client.close()
-    await homeassistant.close()
-
-
+    return _build

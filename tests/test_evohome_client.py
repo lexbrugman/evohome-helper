@@ -1,48 +1,82 @@
+import os
+import stat
+
 import aiohttp
 import pytest
+
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
 
-from evohomeasync2.exceptions import ApiRequestFailedError, BadUserCredentialsError
+from evohomeasync2.exceptions import ApiCallFailedError, BadUserCredentialsError
 from tenacity import wait_none
 
 from evohome_helper import evohome_client
+from evohome_helper.evohome_client import EvohomeService
 
 
-async def test_get_location_uses_default_name(monkeypatch, installed_evohome_client):
-    monkeypatch.setattr("settings.EVOHOME_LOCATION_NAME", "MyHome")
-    state = installed_evohome_client(location_name="MyHome")
+async def test_get_location_uses_default_name(make_service, settings, evohome_factory):
+    state = evohome_factory.complete_state(location_name="MyHome")
+    service = make_service(config=replace(settings, evohome_location_name="MyHome"), locations=[state.location])
 
-    loc = await evohome_client.get_location()
+    loc = await service.get_location()
 
     assert loc is state.location
 
 
-async def test_get_location_raises_for_missing_location(installed_evohome_client):
-    installed_evohome_client(location_name="KnownLocation")
+async def test_get_location_raises_for_missing_location(make_service, evohome_factory):
+    state = evohome_factory.complete_state(location_name="KnownLocation")
+    service = make_service(locations=[state.location])
 
     with pytest.raises(evohome_client.LocationNotFound):
-        await evohome_client.get_location("unknown")
+        await service.get_location("unknown")
 
 
-async def test_client_returns_existing_client():
+async def test_client_returns_existing_client(make_service):
     fake_client = object()
-    evohome_client._evohome_client = fake_client
+    service = make_service(client=fake_client)
 
-    result = await evohome_client._client()
+    result = await service._get_client()
 
     assert result is fake_client
 
 
-async def test_client_creates_and_initializes(monkeypatch, tmp_path):
+async def test_client_creates_and_initializes(monkeypatch, settings, tmp_path):
     mock_client = AsyncMock()
     monkeypatch.setattr("evohome_helper.evohome_client.EvohomeClient", lambda *a, **kw: mock_client)
-    monkeypatch.setattr("settings.EVOHOME_TOKEN_CACHE_PATH", str(tmp_path / "tokens.json"))
+    service = EvohomeService(replace(settings, evohome_token_cache_path=str(tmp_path / "tokens.json")))
 
-    result = await evohome_client._client()
+    result = await service._get_client()
 
     mock_client.update.assert_awaited_once_with(dont_update_status=True)
     assert result is mock_client
+    await service.close()
+
+
+async def test_get_client_cleans_up_session_and_stays_unset_on_failure(monkeypatch, settings, tmp_path):
+    created = []
+    real_ctor = aiohttp.ClientSession
+
+    def _spy_ctor(*a, **kw):
+        session = real_ctor(*a, **kw)
+        created.append(session)
+        return session
+
+    monkeypatch.setattr("aiohttp.ClientSession", _spy_ctor)
+
+    mock_client = AsyncMock()
+    # a non-transient error fails fast (no retries), and _get_client must clean up the session
+    mock_client.update = AsyncMock(side_effect=BadUserCredentialsError("bad credentials", status=400))
+    monkeypatch.setattr("evohome_helper.evohome_client.EvohomeClient", lambda *a, **kw: mock_client)
+
+    service = EvohomeService(replace(settings, evohome_token_cache_path=str(tmp_path / "tokens.json")))
+
+    with pytest.raises(BadUserCredentialsError):
+        await service._get_client()
+
+    assert service._client is None
+    assert service._websession is None
+    assert created and created[0].closed
 
 
 async def test_token_manager_round_trips_tokens(tmp_path):
@@ -61,6 +95,19 @@ async def test_token_manager_round_trips_tokens(tmp_path):
     assert restored.access_token == "access"
     assert restored.refresh_token == "refresh"
     assert restored.is_token_valid()
+
+
+async def test_token_cache_is_written_owner_only(tmp_path):
+    cache_path = tmp_path / "tokens.json"
+
+    async with aiohttp.ClientSession() as session:
+        manager = evohome_client._TokenManager("user", "pass", session, str(cache_path))
+        manager._access_token = "access"
+        manager._access_token_expires = datetime.now(UTC) + timedelta(minutes=30)
+        manager._refresh_token = "refresh"
+        await manager.save_access_token()
+
+    assert stat.S_IMODE(os.stat(cache_path).st_mode) == 0o600
 
 
 async def test_token_manager_handles_missing_cache(tmp_path):
@@ -90,7 +137,7 @@ async def test_retry_retries_transient_errors():
     async def flaky():
         calls["count"] += 1
         if calls["count"] < 3:
-            raise ApiRequestFailedError("temporary failure")
+            raise ApiCallFailedError("temporary failure")
         return "ok"
 
     flaky.retry.wait = wait_none()
@@ -131,29 +178,32 @@ async def test_retry_does_not_retry_unexpected_errors():
     assert calls["count"] == 1
 
 
-async def test_get_location_skips_recently_fetched_schedules(installed_evohome_client):
-    state = installed_evohome_client()
+async def test_get_location_skips_recently_fetched_schedules(make_service, evohome_factory):
+    state = evohome_factory.complete_state()
+    service = make_service(locations=[state.location])
 
-    await evohome_client.get_location()
-    await evohome_client.get_location()
+    await service.get_location()
+    await service.get_location()
 
     state.control_system.get_schedules.assert_awaited_once()
 
 
-async def test_get_location_refetches_schedules_after_refresh_interval(installed_evohome_client):
-    state = installed_evohome_client()
+async def test_get_location_refetches_schedules_after_refresh_interval(make_service, evohome_factory):
+    state = evohome_factory.complete_state()
+    service = make_service(locations=[state.location])
 
-    await evohome_client.get_location()
-    evohome_client._schedule_refresh_times[state.control_system.id] -= evohome_client._SCHEDULE_REFRESH_INTERVAL
-    await evohome_client.get_location()
+    await service.get_location()
+    service._schedule_refresh_times[state.control_system.id] -= evohome_client._SCHEDULE_REFRESH_INTERVAL
+    await service.get_location()
 
     assert state.control_system.get_schedules.await_count == 2
 
 
-async def test_close_invalidates_schedule_cache(installed_evohome_client):
-    installed_evohome_client()
-    await evohome_client.get_location()
+async def test_close_invalidates_schedule_cache(make_service, evohome_factory):
+    state = evohome_factory.complete_state()
+    service = make_service(locations=[state.location])
+    await service.get_location()
 
-    await evohome_client.close()
+    await service.close()
 
-    assert evohome_client._schedule_refresh_times == {}
+    assert service._schedule_refresh_times == {}

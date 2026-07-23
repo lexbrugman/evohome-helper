@@ -1,12 +1,14 @@
 import logging
-import settings
 
 from datetime import datetime, timedelta
-from evohomeasync2 import ControlSystem, Location, Zone
-from evohomeasync2.schemas import SystemMode, ZoneMode
-from evohome_helper import evohome_client
-from evohome_helper import weather
 from typing import Generator
+
+from evohomeasync2 import ControlSystem, DayOfWeek, Location, SystemMode, Zone, ZoneMode
+from evohomeasync2.exceptions import InvalidScheduleError
+
+from evohome_helper.evohome_client import EvohomeService, get_control_systems
+from evohome_helper.weather import WeatherService
+from settings import Settings
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +21,8 @@ _AWAY_MODE_MAP = {
     "custom": SystemMode.CUSTOM,
 }
 
-_DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+# DayOfWeek is the single source of truth for weekday order; it is Monday-first, matching datetime.weekday()
+_WEEKDAY_INDEX = {day.value: index for index, day in enumerate(DayOfWeek)}
 
 
 def get_current_time(location: Location) -> datetime:
@@ -27,7 +30,7 @@ def get_current_time(location: Location) -> datetime:
 
 
 def _switchpoint_to_datetime(day_of_week: str, time_of_day: str, now: datetime) -> datetime:
-    target_weekday = _DAY_NAMES.index(day_of_week)
+    target_weekday = _WEEKDAY_INDEX[str(day_of_week).lower()]
     days_ago = (now.weekday() - target_weekday) % 7
     hour, minute, second = (int(x) for x in time_of_day.split(":"))
     switchpoint_date = now.date() - timedelta(days=days_ago)
@@ -38,8 +41,14 @@ def _switchpoint_to_datetime(day_of_week: str, time_of_day: str, now: datetime) 
 
 
 def _get_zone_switch_points(zone: Zone, now: datetime) -> list[tuple[datetime, float]]:
+    try:
+        schedule = zone.schedule
+    except InvalidScheduleError:
+        # a zone without a (valid) schedule has no switch points to consider
+        return []
+
     result = []
-    for day_schedule in zone.schedule:
+    for day_schedule in schedule:
         for switchpoint in day_schedule["switchpoints"]:
             switchpoint_datetime = _switchpoint_to_datetime(day_schedule["day_of_week"], switchpoint["time_of_day"], now)
             result.append((switchpoint_datetime, switchpoint["heat_setpoint"]))
@@ -47,142 +56,133 @@ def _get_zone_switch_points(zone: Zone, now: datetime) -> list[tuple[datetime, f
     return result
 
 
-def _get_last_heating_switchpoint(zone: Zone, now: datetime) -> tuple[datetime, float] | None:
-    last_heating_datetime = None
-    last_heating_temperature = None
-    for switchpoint_datetime, switchpoint_temperature in _get_zone_switch_points(zone, now):
-        if not _is_considered_off(switchpoint_temperature):
-            last_heating_datetime = switchpoint_datetime
-            last_heating_temperature = switchpoint_temperature
-
-    if last_heating_datetime is None or last_heating_temperature is None:
-        return None
-
-    return last_heating_datetime, last_heating_temperature
-
-
 def _get_active_setpoint(zone: Zone, now: datetime) -> float | None:
     switch_points = _get_zone_switch_points(zone, now)
     if not switch_points:
         return None
-    return switch_points[-1][1]
+    return max(switch_points, key=lambda point: point[0])[1]
 
 
-def is_in_schedule_grace_period(location: Location) -> bool:
-    now = get_current_time(location)
+class EvohomeController:
+    def __init__(self, evohome_service: EvohomeService, weather: WeatherService, settings: Settings):
+        self._evohome = evohome_service
+        self._weather = weather
+        self._settings = settings
 
-    zones = get_zones(location)
-    for zone in zones:
-        switch_point = _get_last_heating_switchpoint(zone, now)
-        if switch_point is None:
-            logger.debug("no scheduled heating switch point found for %s", zone.name)
-            continue
+    def validate_configuration(self) -> None:
+        # fail fast at startup instead of raising a KeyError deep inside the loop
+        if self._settings.evohome_away_mode not in _AWAY_MODE_MAP:
+            raise ValueError(f"invalid away_mode '{self._settings.evohome_away_mode}'; must be one of {sorted(_AWAY_MODE_MAP)}")
 
-        switch_point_start, switch_point_temperature = switch_point
-        logger.debug(
-            "last scheduled switch point for %s was at: %s (%s degrees celsius)",
-            zone.name,
-            switch_point_start,
-            switch_point_temperature,
-        )
+    def get_zones(self, location: Location) -> Generator[Zone, None, None]:
+        for control_system in get_control_systems(location):
+            for zone in control_system.zones:
+                if zone.active_faults:
+                    continue
 
-        since_switch_point = now - switch_point_start
-        if since_switch_point.total_seconds() < settings.PRESENCE_HEATING_SCHEDULE_GRACE_TIME:
-            return True
+                yield zone
 
-    return False
+    def is_in_schedule_grace_period(self, location: Location) -> bool:
+        now = get_current_time(location)
 
-
-def get_zones(location: Location) -> Generator[Zone, None, None]:
-    for control_system in evohome_client.get_control_systems(location):
-        for zone in control_system.zones:
-            if zone.active_faults:
+        for zone in self.get_zones(location):
+            switch_point = self._get_last_heating_switchpoint(zone, now)
+            if switch_point is None:
+                logger.debug("no scheduled heating switch point found for %s", zone.name)
                 continue
 
-            yield zone
+            switch_point_start, switch_point_temperature = switch_point
+            logger.debug(
+                "last scheduled switch point for %s was at: %s (%s degrees celsius)",
+                zone.name,
+                switch_point_start,
+                switch_point_temperature,
+            )
 
+            since_switch_point = now - switch_point_start
+            if since_switch_point.total_seconds() < self._settings.presence_heating_schedule_grace_time:
+                return True
 
-def _is_considered_off(temperature: float) -> bool:
-    return temperature <= settings.EVOHOME_OFF_TEMP_THRESHOLD
+        return False
 
+    async def set_normal(self, location: Location) -> None:
+        if await self._is_normal_heating_needed(location):
+            await self._set_mode(SystemMode.AUTO, location)
+        else:
+            await self._set_mode(SystemMode.AUTO_WITH_ECO, location)
 
-def _get_desired_away_mode() -> SystemMode:
-    return _AWAY_MODE_MAP[settings.EVOHOME_AWAY_MODE]
+    async def set_away(self, location: Location) -> None:
+        await self._set_mode(self._get_desired_away_mode(), location)
 
+    def _get_last_heating_switchpoint(self, zone: Zone, now: datetime) -> tuple[datetime, float] | None:
+        last_heating_datetime = None
+        last_heating_temperature = None
+        for switchpoint_datetime, switchpoint_temperature in _get_zone_switch_points(zone, now):
+            if not self._is_considered_off(switchpoint_temperature):
+                last_heating_datetime = switchpoint_datetime
+                last_heating_temperature = switchpoint_temperature
 
-def _get_override_modes() -> set:
-    excluded = {SystemMode.AUTO, SystemMode.AUTO_WITH_ECO, _get_desired_away_mode()}
-    return set(SystemMode) - excluded
+        if last_heating_datetime is None or last_heating_temperature is None:
+            return None
 
+        return last_heating_datetime, last_heating_temperature
 
-def _is_override_enabled(control_system: ControlSystem) -> bool:
-    current_mode = control_system.mode
-    if current_mode in _get_override_modes():
-        return True
+    def _is_considered_off(self, temperature: float) -> bool:
+        return temperature <= self._settings.evohome_off_temp_threshold
 
-    return any(zone.mode != ZoneMode.FOLLOW_SCHEDULE for zone in control_system.zones)
+    def _get_desired_away_mode(self) -> SystemMode:
+        return _AWAY_MODE_MAP[self._settings.evohome_away_mode]
 
+    def _get_override_modes(self) -> set:
+        excluded = {SystemMode.AUTO, SystemMode.AUTO_WITH_ECO, self._get_desired_away_mode()}
+        return set(SystemMode) - excluded
 
-async def _is_normal_heating_needed(location: Location) -> bool:
-    if not settings.AUTO_ECO_ENABLED:
-        return True
+    def _is_override_enabled(self, control_system: ControlSystem) -> bool:
+        if control_system.mode in self._get_override_modes():
+            return True
 
-    outside_temp_threshold = settings.AUTO_ECO_OUTSIDE_TEMP_THRESHOLD
-    inside_temp_diff = settings.AUTO_ECO_INSIDE_TEMP_DIFF
-    highest_set_point_temp = _get_highest_set_point_temp(location)
+        return any(zone.mode != ZoneMode.FOLLOW_SCHEDULE for zone in control_system.zones)
 
-    # no valid active setpoint, or all zones are off?
-    if highest_set_point_temp is None or _is_considered_off(highest_set_point_temp):
-        return True
+    async def _is_normal_heating_needed(self, location: Location) -> bool:
+        if not self._settings.auto_eco_enabled:
+            return True
 
-    # can we fetch a valid temperature?
-    outside_current_temp = await weather.get_current_temperature()
-    if outside_current_temp is None:
-        return True
+        highest_set_point_temp = self._get_highest_set_point_temp(location)
 
-    logger.debug(
-        "current outside temperature: %s degrees celsius",
-        outside_current_temp,
-    )
+        # no valid active setpoint, or all zones are off?
+        if highest_set_point_temp is None or self._is_considered_off(highest_set_point_temp):
+            return True
 
-    # are we below the eco mode threshold?
-    if outside_current_temp < outside_temp_threshold:
-        return True
+        # can we fetch a valid temperature?
+        outside_current_temp = await self._weather.get_current_temperature()
+        if outside_current_temp is None:
+            return True
 
-    return outside_current_temp + inside_temp_diff < highest_set_point_temp
+        logger.debug("current outside temperature: %s degrees celsius", outside_current_temp)
 
+        # are we below the eco mode threshold?
+        if outside_current_temp < self._settings.auto_eco_outside_temp_threshold:
+            return True
 
-def _get_highest_set_point_temp(location: Location) -> float | None:
-    zones = list(get_zones(location))
-    if not zones:
-        return None
-    now = get_current_time(location)
-    active_setpoints = (_get_active_setpoint(zone, now) for zone in zones)
-    valid_setpoints = filter(lambda setpoint: setpoint is not None, active_setpoints)
-    return max(valid_setpoints, default=None)
+        return outside_current_temp + self._settings.auto_eco_inside_temp_diff < highest_set_point_temp
 
+    def _get_highest_set_point_temp(self, location: Location) -> float | None:
+        zones = list(self.get_zones(location))
+        if not zones:
+            return None
+        now = get_current_time(location)
+        active_setpoints = (_get_active_setpoint(zone, now) for zone in zones)
+        valid_setpoints = filter(lambda setpoint: setpoint is not None, active_setpoints)
+        return max(valid_setpoints, default=None)
 
-async def _set_mode(new_mode: SystemMode, location: Location) -> None:
-    for control_system in evohome_client.get_control_systems(location):
-        current_mode = control_system.mode
-        if new_mode == current_mode:
-            continue
+    async def _set_mode(self, new_mode: SystemMode, location: Location) -> None:
+        for control_system in get_control_systems(location):
+            if new_mode == control_system.mode:
+                continue
 
-        if _is_override_enabled(control_system):
-            logger.warning("not changing thermostat (%s) mode, override is set", control_system.id)
-            continue
+            if self._is_override_enabled(control_system):
+                logger.warning("not changing thermostat (%s) mode, override is set", control_system.id)
+                continue
 
-        logger.debug("changing thermostat (%s) mode to '%s'", control_system.id, new_mode)
-        await evohome_client.set_system_mode(control_system, new_mode)
-
-
-async def set_normal(location: Location) -> None:
-    if await _is_normal_heating_needed(location):
-        await _set_mode(SystemMode.AUTO, location)
-    else:
-        await _set_mode(SystemMode.AUTO_WITH_ECO, location)
-
-
-async def set_away(location: Location) -> None:
-    desired_away_mode = _get_desired_away_mode()
-    await _set_mode(desired_away_mode, location)
+            logger.debug("changing thermostat (%s) mode to '%s'", control_system.id, new_mode)
+            await self._evohome.set_system_mode(control_system, new_mode)
