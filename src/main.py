@@ -45,7 +45,9 @@ class Application:
             logger.info(
                 "%s: %s/%s (%s)",
                 zone.name,
-                temperature_status["temperature"],
+                # absent when the sensor is unavailable (dead battery, comms lost); the other
+                # two keys are guaranteed by the API schema
+                temperature_status.get("temperature"),
                 setpoint_status["target_heat_temperature"],
                 setpoint_status["setpoint_mode"],
             )

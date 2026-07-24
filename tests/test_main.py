@@ -44,6 +44,9 @@ def _build_app(settings, service, presence):
         (True, True, False, SystemMode.AUTO_WITH_ECO, SystemMode.AUTO, "2024-04-10 08:00:00"),
         (False, True, True, SystemMode.AUTO_WITH_ECO, SystemMode.AUTO, "2024-04-07 08:00:00"),
         (False, False, False, SystemMode.AUTO, SystemMode.AWAY, "2024-04-10 08:00:00"),
+        # exactly one grace active must still mean away: both conjuncts are load-bearing
+        (False, True, False, SystemMode.AUTO, SystemMode.AWAY, "2024-04-10 08:00:00"),
+        (False, False, True, SystemMode.AUTO, SystemMode.AWAY, "2024-04-07 08:00:00"),
     ],
 )
 async def test_set_thermostat_mode_public_scenarios(
@@ -84,6 +87,21 @@ async def test_set_thermostat_mode_multiple_zones_keeps_normal(make_service, evo
 
     control_system.set_mode.assert_awaited_once_with(SystemMode.AUTO)
     assert control_system.mode == SystemMode.AUTO
+
+
+async def test_set_thermostat_mode_survives_unavailable_zone_sensor(make_service, evohome_factory, settings):
+    """An offline sensor reports {"is_available": False} with NO temperature key; the
+    informational log line must not abort the control cycle."""
+    state = evohome_factory.complete_state(system_mode=SystemMode.AUTO_WITH_ECO)
+    state.zone.temperature_status = {"is_available": False}
+    service = make_service(locations=[state.location])
+    presence = _fake_presence(someone_home=True, known=True)
+    app = _build_app(settings, service, presence)
+
+    with freeze_time("2024-04-10 08:00:00"):
+        await app.determine_and_set_thermostat_mode()
+
+    state.control_system.set_mode.assert_awaited_once_with(SystemMode.AUTO)
 
 
 async def test_thermostat_unchanged_when_presence_unknown(make_service, evohome_factory, settings):

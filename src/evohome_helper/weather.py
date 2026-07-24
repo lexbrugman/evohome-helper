@@ -24,4 +24,10 @@ class WeatherService:
         if current_temperature is None:
             return None
 
-        return round(current_temperature, 1)
+        # misbehaving integrations can expose the temperature as a string (or worse);
+        # a bad reading must never abort the control cycle
+        try:
+            return round(float(current_temperature), 1)
+        except (TypeError, ValueError):
+            logger.warning("ignoring the non-numeric temperature %r of weather entity '%s'", current_temperature, weather_entity)
+            return None

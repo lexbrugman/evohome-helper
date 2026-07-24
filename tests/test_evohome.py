@@ -4,7 +4,7 @@ from dataclasses import replace
 from datetime import datetime
 from freezegun import freeze_time
 
-from evohomeasync2 import SystemMode, ZoneMode
+from evohomeasync2 import FaultType, SystemMode, ZoneMode
 
 from evohome_helper import evohome
 
@@ -14,7 +14,7 @@ def test_factory_complete_state_supports_full_state_setup(evohome_factory):
 
     assert state.control_system.mode == SystemMode.DAY_OFF
     assert state.zone.mode == ZoneMode.PERMANENT_OVERRIDE
-    assert state.zone.active_faults == ["fault"]
+    assert [fault["fault_type"] for fault in state.zone.active_faults] == [FaultType.ZON_S_CL]
 
 
 def test_get_override_modes_excludes_expected_modes(controller_factory, settings):
@@ -91,6 +91,42 @@ async def test_is_normal_heating_needed_paths(controller_factory, evohome_factor
 
     with freeze_time("2024-04-10 08:00:00"):
         assert await controller._is_normal_heating_needed(state.location) is expected
+
+
+def test_get_active_setpoint_picks_most_recent_switchpoint(evohome_factory):
+    sp_morning = evohome_factory.switchpoint("07:00:00", 21)
+    sp_noon = evohome_factory.switchpoint("12:00:00", 16)
+    daily = [evohome_factory.day_schedule(d, [sp_morning, sp_noon]) for d in range(7)]
+    state = evohome_factory.complete_state(schedule=daily)
+
+    assert evohome._get_active_setpoint(state.zone, datetime(2024, 4, 10, 11, 0, 0)) == 21.0
+    assert evohome._get_active_setpoint(state.zone, datetime(2024, 4, 10, 13, 0, 0)) == 16.0
+
+
+async def test_is_normal_heating_needed_flips_when_schedule_crosses_switchpoint(controller_factory, evohome_factory, settings):
+    """The auto-eco comparison must use the currently active setpoint, not just any."""
+    sp_morning = evohome_factory.switchpoint("07:00:00", 21)
+    sp_noon = evohome_factory.switchpoint("12:00:00", 16)
+    daily = [evohome_factory.day_schedule(d, [sp_morning, sp_noon]) for d in range(7)]
+    state = evohome_factory.complete_state(schedule=daily)
+    config = replace(settings, auto_eco_enabled=True, auto_eco_outside_temp_threshold=14, auto_eco_inside_temp_diff=2)
+    controller = controller_factory(config=config, outside_temp=18)
+
+    with freeze_time("2024-04-10 11:00:00"):  # active setpoint 21: 18 + 2 < 21 -> heat normally
+        assert await controller._is_normal_heating_needed(state.location) is True
+
+    with freeze_time("2024-04-10 13:00:00"):  # active setpoint 16: 18 + 2 >= 16 -> eco
+        assert await controller._is_normal_heating_needed(state.location) is False
+
+
+def test_get_highest_set_point_temp_takes_max_across_zones(controller_factory, evohome_factory):
+    warm_zone = evohome_factory.zone(name="Living", schedule=evohome_factory.uniform_schedule(setpoint=21))
+    cool_zone = evohome_factory.zone(name="Hall", schedule=evohome_factory.uniform_schedule(setpoint=16))
+    control_system = evohome_factory.control_system(zones=[cool_zone, warm_zone])
+    location = evohome_factory.location(control_systems=[control_system])
+
+    with freeze_time("2024-04-10 08:00:00"):
+        assert controller_factory()._get_highest_set_point_temp(location) == 21.0
 
 
 def test_is_in_schedule_grace_period(controller_factory, evohome_factory, settings):
@@ -209,14 +245,36 @@ def test_is_in_schedule_grace_period_false_when_zone_always_off(controller_facto
         assert controller.is_in_schedule_grace_period(state.location) is False
 
 
-def test_get_zones_filters_faulty_zones(controller_factory, evohome_factory):
+def test_get_zones_filters_zones_with_unusable_data(controller_factory, evohome_factory):
     state = evohome_factory.complete_state(with_fault=False)
-    faulty = evohome_factory.zone(name="bad", active_faults=["fault"])
-    state.control_system.zones.append(faulty)
+    comms_lost = evohome_factory.zone(name="bad", active_faults=[evohome_factory.fault(FaultType.ZON_S_CL)])
+    state.control_system.zones.append(comms_lost)
 
     zones = list(controller_factory().get_zones(state.location))
 
     assert zones == [state.zone]
+
+
+def test_get_zones_keeps_zones_with_benign_faults(controller_factory, evohome_factory):
+    # a low battery still heats normally, so the zone must keep counting
+    state = evohome_factory.complete_state(with_fault=False)
+    low_battery = evohome_factory.zone(name="tired", active_faults=[evohome_factory.fault(FaultType.ZON_A_LB)])
+    state.control_system.zones.append(low_battery)
+
+    zones = list(controller_factory().get_zones(state.location))
+
+    assert zones == [state.zone, low_battery]
+
+
+def test_get_zones_keeps_zones_with_unknown_fault_types(controller_factory, evohome_factory):
+    # the library allows fault_type to be an unrecognized plain string; assume benign
+    state = evohome_factory.complete_state(with_fault=False)
+    odd = evohome_factory.zone(name="odd", active_faults=[evohome_factory.fault("SomeNewFaultType")])
+    state.control_system.zones.append(odd)
+
+    zones = list(controller_factory().get_zones(state.location))
+
+    assert zones == [state.zone, odd]
 
 
 async def test_set_normal_selects_auto_or_eco(controller_factory, evohome_factory, settings):

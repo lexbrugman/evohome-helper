@@ -8,8 +8,8 @@ from unittest.mock import AsyncMock, Mock
 import aiohttp
 import pytest
 
-from evohomeasync2 import DayOfWeek, SystemMode, ZoneMode
-from evohomeasync2.exceptions import InvalidScheduleError
+from evohomeasync2 import DayOfWeek, FaultType, SystemMode, ZoneMode
+from evohomeasync2.exceptions import InvalidScheduleError, InvalidSystemModeError
 
 from evohome_helper.evohome import EvohomeController
 from evohome_helper.evohome_client import EvohomeService
@@ -76,6 +76,11 @@ def _uniform_schedule(setpoint=20.0, time_of_day="07:00:00"):
     return [_make_day_schedule(d, [sp]) for d in range(7)]
 
 
+def _make_fault(fault_type=FaultType.ZON_S_CL):
+    # the real library returns active faults as dicts with a fault_type and a since datetime
+    return {"fault_type": fault_type, "since": datetime(2024, 4, 1, 12, 0, 0)}
+
+
 class FakeZone:
     # not a dataclass: the real evohomeasync2.Zone.schedule is a property that RAISES
     # when the zone has no schedule, so the fake models that rather than exposing a plain list
@@ -107,12 +112,17 @@ class FakeControlSystem:
     mode: SystemMode = SystemMode.AUTO
     zones: list = field(default_factory=list)
     id: str = "system-1"
+    # the real library raises for modes the installation does not allow; default to
+    # allowing everything so only tests about unsupported modes need to restrict it
+    allowed_modes: tuple = tuple(SystemMode)
 
     def __post_init__(self):
         self.set_mode = AsyncMock(side_effect=self._do_set_mode)
         self.get_schedules = AsyncMock()
 
     async def _do_set_mode(self, new_mode):
+        if new_mode not in self.allowed_modes:
+            raise InvalidSystemModeError(f"{self.id}: Unsupported system_mode: {new_mode}")
         self.mode = new_mode
 
 
@@ -153,8 +163,12 @@ class EvohomeFactory:
         return FakeZone(**kwargs)
 
     @staticmethod
-    def control_system(mode=SystemMode.AUTO, zones=None, system_id="system-1"):
-        return FakeControlSystem(mode=mode, zones=zones or [], id=system_id)
+    def control_system(mode=SystemMode.AUTO, zones=None, system_id="system-1", allowed_modes=tuple(SystemMode)):
+        return FakeControlSystem(mode=mode, zones=zones or [], id=system_id, allowed_modes=allowed_modes)
+
+    @staticmethod
+    def fault(fault_type=FaultType.ZON_S_CL):
+        return _make_fault(fault_type)
 
     @staticmethod
     def location(*, name="Home", control_systems=None):
@@ -180,7 +194,7 @@ class EvohomeFactory:
             mode=zone_mode,
             setpoint_status={"setpoint_mode": zone_mode, "target_heat_temperature": setpoint},
             temperature_status={"is_available": True, "temperature": 20},
-            active_faults=["fault"] if with_fault else [],
+            active_faults=[_make_fault()] if with_fault else [],
             schedule=schedule if schedule is not None else EvohomeFactory.uniform_schedule(setpoint=float(setpoint)),
         )
         control = EvohomeFactory.control_system(mode=system_mode, zones=[zone])
@@ -195,7 +209,10 @@ def evohome_factory():
 
 class FakeHomeAssistant:
     """Faithful double of HomeAssistantClient: get_entity_state returns a dict, or None
-    when the entity is unknown/unavailable (an outage, a bad token, a wrong entity id)."""
+    when the request itself failed (an outage, a bad token, a wrong entity id).
+
+    NOTE: an entity whose integration is down is NOT a failed request -- HA returns a
+    normal response with state "unavailable"/"unknown"; model that as a state dict."""
 
     def __init__(self):
         self._states = {}

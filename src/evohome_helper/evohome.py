@@ -3,7 +3,7 @@ import logging
 from datetime import datetime, timedelta
 from typing import Generator
 
-from evohomeasync2 import ControlSystem, DayOfWeek, Location, SystemMode, Zone, ZoneMode
+from evohomeasync2 import ControlSystem, DayOfWeek, FaultType, Location, SystemMode, Zone, ZoneMode
 from evohomeasync2.exceptions import InvalidScheduleError
 
 from evohome_helper.evohome_client import EvohomeService, get_control_systems
@@ -23,6 +23,20 @@ _AWAY_MODE_MAP = {
 
 # DayOfWeek is the single source of truth for weekday order; it is Monday-first, matching datetime.weekday()
 _WEEKDAY_INDEX = {day.value: index for index, day in enumerate(DayOfWeek)}
+
+# faults that make a zone's readings and schedule unusable; benign faults (e.g. a low
+# battery) leave the zone heating normally, so it must keep counting toward the
+# setpoint and grace-period calculations
+_DATA_UNUSABLE_FAULTS = {
+    FaultType.GWY_X_CL,  # GatewayCommunicationLost
+    FaultType.ZON_A_CL,  # TempZoneActuatorCommunicationLost
+    FaultType.ZON_S_CL,  # TempZoneSensorCommunicationLost
+}
+
+
+def _zone_data_is_unusable(zone: Zone) -> bool:
+    # unknown fault types are assumed benign: the zone's data may well still be fine
+    return any(fault["fault_type"] in _DATA_UNUSABLE_FAULTS for fault in zone.active_faults)
 
 
 def get_current_time(location: Location) -> datetime:
@@ -77,7 +91,7 @@ class EvohomeController:
     def get_zones(self, location: Location) -> Generator[Zone, None, None]:
         for control_system in get_control_systems(location):
             for zone in control_system.zones:
-                if zone.active_faults:
+                if _zone_data_is_unusable(zone):
                     continue
 
                 yield zone

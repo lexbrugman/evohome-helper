@@ -10,22 +10,43 @@ import aiohttp
 
 from evohomeasync2 import ControlSystem, EvohomeClient, Location, SystemMode
 from evohomeasync2.auth import AbstractTokenManager
-from evohomeasync2.exceptions import ApiCallFailedError, AuthenticationFailedError, BadUserCredentialsError
-from tenacity import retry, retry_if_exception_type, retry_if_not_exception_type, stop_after_attempt, wait_exponential
+from evohomeasync2.exceptions import ApiCallFailedError, AuthenticationFailedError, BadApiSchemaError, BadUserCredentialsError
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from settings import Settings
 
 logger = logging.getLogger(__name__)
 
-# only retry errors that can resolve on their own; invalid credentials never will
+# only retry errors that can resolve on their own
 _TRANSIENT_ERRORS = (
     aiohttp.ClientError,
     TimeoutError,
     ApiCallFailedError,
     AuthenticationFailedError,
 )
+# never retry these: invalid credentials and malformed/unsupported requests (e.g. a system
+# mode the installation does not allow) fail identically on every attempt
+_PERMANENT_ERRORS = (
+    BadUserCredentialsError,
+    BadApiSchemaError,
+)
+_HTTP_TOO_MANY_REQUESTS = 429
+
+
+def _is_retryable(exception: BaseException) -> bool:
+    if isinstance(exception, _PERMANENT_ERRORS):
+        return False
+
+    # hammering a rate-limited API only deepens the throttle; give up and let the
+    # next interval-spaced cycle be the retry
+    if getattr(exception, "status", None) == _HTTP_TOO_MANY_REQUESTS:
+        return False
+
+    return isinstance(exception, _TRANSIENT_ERRORS)
+
+
 _retry = retry(
-    retry=retry_if_exception_type(_TRANSIENT_ERRORS) & retry_if_not_exception_type(BadUserCredentialsError),
+    retry=retry_if_exception(_is_retryable),
     wait=wait_exponential(),
     stop=stop_after_attempt(6),
     reraise=True,
@@ -40,6 +61,10 @@ class LocationNotFound(Exception):
         super().__init__(f"the location '{location_name}' does not exist in the evohome account")
 
 
+# stored alongside the tokens so the cache is bound to the account it belongs to
+_CACHE_USERNAME_KEY = "username"
+
+
 class _TokenManager(AbstractTokenManager):
     """Caches auth tokens on disk so restarts reuse them instead of
     re-authenticating against the heavily rate-limited vendor API."""
@@ -51,10 +76,19 @@ class _TokenManager(AbstractTokenManager):
     async def load_access_token(self) -> None:
         try:
             with open(self._token_cache_path) as f:
-                self._import_access_token(json.load(f))
+                cache = json.load(f)
+
+            # a refresh token stays valid for the account it was issued to, so a cache
+            # from another (or unknown) account would silently override changed
+            # credentials forever; discard it and authenticate from scratch instead
+            if cache.pop(_CACHE_USERNAME_KEY, None) != self.client_id:
+                logger.warning("ignoring the token cache at '%s': it belongs to another account", self._token_cache_path)
+                return
+
+            self._import_access_token(cache)
         except FileNotFoundError:
             pass
-        except (KeyError, ValueError):
+        except (AttributeError, KeyError, TypeError, ValueError):
             logger.warning("ignoring the invalid token cache at '%s'", self._token_cache_path)
 
     async def save_access_token(self) -> None:
@@ -67,7 +101,7 @@ class _TokenManager(AbstractTokenManager):
             # (os.replace preserves the temp file's mode on the destination)
             fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
             with os.fdopen(fd, "w") as f:
-                json.dump(self._export_access_token(), f)
+                json.dump({**self._export_access_token(), _CACHE_USERNAME_KEY: self.client_id}, f)
             os.replace(tmp_path, self._token_cache_path)
         except OSError:
             logger.warning("could not persist the token cache to '%s'", self._token_cache_path)
