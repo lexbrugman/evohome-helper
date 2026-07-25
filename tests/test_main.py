@@ -134,6 +134,33 @@ async def test_run_shuts_down_gracefully_on_sigterm(settings):
 
     await asyncio.wait_for(task, timeout=2)
     app.determine_and_set_thermostat_mode.assert_awaited()
+    # the finally block must release both aiohttp sessions
+    app._homeassistant.close.assert_awaited_once()
+    app._evohome_service.close.assert_awaited_once()
+
+
+async def test_run_resets_only_after_consecutive_failures(settings):
+    """Two failures, a success, then three failures: the success must break the streak,
+    so exactly one reset fires, and only after the three consecutive failures."""
+    app = _minimal_app(settings, interval=0.01)
+    log = []
+    outcomes = [Exception("boom"), Exception("boom"), None, Exception("boom"), Exception("boom"), Exception("boom")]
+
+    async def scripted():
+        if not outcomes:  # script exhausted: stop the loop
+            os.kill(os.getpid(), signal.SIGTERM)
+            return
+        log.append("cycle")
+        outcome = outcomes.pop(0)
+        if outcome is not None:
+            raise outcome
+
+    app.determine_and_set_thermostat_mode = scripted
+    app._evohome_service.reset = AsyncMock(side_effect=lambda: log.append("reset"))
+
+    await asyncio.wait_for(app.run(), timeout=5)
+
+    assert log == ["cycle"] * 6 + ["reset"]
 
 
 async def test_run_resets_evohome_client_after_repeated_failures(settings):

@@ -52,6 +52,8 @@ async def test_client_creates_and_initializes(monkeypatch, settings, tmp_path):
 
     mock_client.update.assert_awaited_once_with(dont_update_status=True)
     assert result is mock_client
+    # a stalled server must not be able to block a request for aiohttp's 300s default
+    assert service._websession.timeout.total == 30
     await service.close()
 
 
@@ -166,6 +168,25 @@ async def test_token_manager_ignores_corrupt_cache(tmp_path):
     assert manager.access_token == ""
 
 
+@pytest.mark.skipif(os.geteuid() == 0, reason="root is not subject to file permissions")
+async def test_token_manager_survives_unreadable_cache(tmp_path):
+    # a permissions problem on /data must fall back to a fresh authentication,
+    # not block startup forever
+    cache_path = tmp_path / "tokens.json"
+    cache_path.write_text("{}")
+    cache_path.chmod(0)
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            manager = evohome_client._TokenManager("user", "pass", session, str(cache_path))
+            await manager.load_access_token()
+    finally:
+        cache_path.chmod(0o600)  # let pytest clean up the tmp dir
+
+    assert manager.access_token == ""
+    assert not manager.is_token_valid()
+
+
 async def test_retry_retries_transient_errors():
     calls = {"count": 0}
 
@@ -241,6 +262,50 @@ async def test_set_system_mode_does_not_retry_an_unsupported_mode(make_service, 
         await service.set_system_mode(control_system, SystemMode.CUSTOM)
 
     assert control_system.set_mode.await_count == 1
+
+
+# the following three tests pin that the service methods actually CARRY the retry
+# decorator; removing @_retry from any of them must fail a test, not just weaken
+# production resilience
+
+
+async def test_set_system_mode_is_retried_on_transient_errors(monkeypatch, make_service, evohome_factory):
+    monkeypatch.setattr(EvohomeService.set_system_mode.retry, "wait", wait_none())
+    control_system = evohome_factory.control_system()
+    control_system.set_mode.side_effect = [ApiCallFailedError("temporary failure", status=503), None]
+    service = make_service()
+
+    await service.set_system_mode(control_system, SystemMode.AWAY)
+
+    assert control_system.set_mode.await_count == 2
+
+
+async def test_update_location_is_retried_on_transient_errors(monkeypatch, make_service, evohome_factory):
+    monkeypatch.setattr(EvohomeService._update_location.retry, "wait", wait_none())
+    state = evohome_factory.complete_state()
+    calls = {"count": 0}
+
+    async def flaky_update():
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise ApiCallFailedError("temporary failure", status=503)
+
+    state.location.update = flaky_update
+    service = make_service(locations=[state.location])
+
+    assert await service.get_location() is state.location
+    assert calls["count"] == 2
+
+
+async def test_fetch_schedules_is_retried_on_transient_errors(monkeypatch, make_service, evohome_factory):
+    monkeypatch.setattr(EvohomeService._fetch_schedules.retry, "wait", wait_none())
+    state = evohome_factory.complete_state()
+    state.control_system.get_schedules.side_effect = [ApiCallFailedError("temporary failure", status=503), None]
+    service = make_service(locations=[state.location])
+
+    await service.get_location()
+
+    assert state.control_system.get_schedules.await_count == 2
 
 
 async def test_retry_does_not_retry_unexpected_errors():

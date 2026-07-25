@@ -30,8 +30,7 @@ poetry install --with dev
 poetry run pytest
 ```
 
-Run the service locally with:
-
-```bash
-poetry run python src/main.py
-```
+The service only runs inside the Home Assistant add-on: it reads its configuration
+from `/data/options.json` and talks to Home Assistant through the supervisor API,
+neither of which exists outside the add-on container. The test suite is the local
+development loop; to try changes for real, install the edge build of the add-on.

@@ -88,6 +88,10 @@ class _TokenManager(AbstractTokenManager):
             self._import_access_token(cache)
         except FileNotFoundError:
             pass
+        except OSError:
+            # an unreadable cache (permissions, I/O errors) must not block startup;
+            # proceed with a fresh authentication instead
+            logger.warning("could not read the token cache at '%s'", self._token_cache_path)
         except (AttributeError, KeyError, TypeError, ValueError):
             logger.warning("ignoring the invalid token cache at '%s'", self._token_cache_path)
 
@@ -138,7 +142,9 @@ class EvohomeService:
     async def _get_client(self) -> EvohomeClient:
         async with self._lock:
             if self._client is None:
-                websession = aiohttp.ClientSession()
+                # without a timeout a stalled server blocks a request for aiohttp's
+                # 300s default, freezing the control loop for minutes per retry
+                websession = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30, connect=10))
                 try:
                     token_manager = _TokenManager(
                         self._settings.evohome_username,

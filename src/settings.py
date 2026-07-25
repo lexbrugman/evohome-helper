@@ -3,6 +3,9 @@ import os
 
 from dataclasses import dataclass
 
+# where the Home Assistant supervisor mounts the add-on configuration
+_OPTIONS_PATH = "/data/options.json"
+
 
 @dataclass(frozen=True)
 class Settings:
@@ -27,7 +30,7 @@ class Settings:
     def load(cls) -> "Settings":
         # read the add-on configuration from Home Assistant; called once at startup so
         # that importing this module has no side effects (and works outside the add-on)
-        with open("/data/options.json") as f:
+        with open(_OPTIONS_PATH) as f:
             config = json.load(f)
 
         return cls(
