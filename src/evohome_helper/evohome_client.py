@@ -3,8 +3,8 @@ import json
 import logging
 import os
 
+from collections.abc import Iterator
 from datetime import datetime, timedelta
-from typing import Generator
 
 import aiohttp
 
@@ -111,7 +111,7 @@ class _TokenManager(AbstractTokenManager):
             logger.warning("could not persist the token cache to '%s'", self._token_cache_path)
 
 
-def get_control_systems(location: Location) -> Generator[ControlSystem, None, None]:
+def get_control_systems(location: Location) -> Iterator[ControlSystem]:
     for gateway in location.gateways:
         for control_system in gateway.systems:
             yield control_system

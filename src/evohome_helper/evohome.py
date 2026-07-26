@@ -1,7 +1,7 @@
 import logging
 
+from collections.abc import Iterator
 from datetime import datetime, timedelta
-from typing import Generator
 
 from evohomeasync2 import ControlSystem, DayOfWeek, FaultType, Location, SystemMode, Zone, ZoneMode
 from evohomeasync2.exceptions import InvalidScheduleError
@@ -74,7 +74,8 @@ def _get_active_setpoint(zone: Zone, now: datetime) -> float | None:
     switch_points = _get_zone_switch_points(zone, now)
     if not switch_points:
         return None
-    return max(switch_points, key=lambda point: point[0])[1]
+    # the switch points are sorted ascending by datetime, so the last one is active
+    return switch_points[-1][1]
 
 
 class EvohomeController:
@@ -88,7 +89,7 @@ class EvohomeController:
         if self._settings.evohome_away_mode not in _AWAY_MODE_MAP:
             raise ValueError(f"invalid away_mode '{self._settings.evohome_away_mode}'; must be one of {sorted(_AWAY_MODE_MAP)}")
 
-    def get_zones(self, location: Location) -> Generator[Zone, None, None]:
+    def get_zones(self, location: Location) -> Iterator[Zone]:
         for control_system in get_control_systems(location):
             for zone in control_system.zones:
                 if _zone_data_is_unusable(zone):
