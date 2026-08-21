@@ -267,9 +267,9 @@ def test_get_zones_keeps_zones_with_benign_faults(controller_factory, evohome_fa
 
 
 def test_get_zones_keeps_zones_with_unknown_fault_types(controller_factory, evohome_factory):
-    # the library allows fault_type to be an unrecognized plain string; assume benign
+    # the library passes an unrecognized fault_type through as a plain snake_case str; assume benign
     state = evohome_factory.complete_state(with_fault=False)
-    odd = evohome_factory.zone(name="odd", active_faults=[evohome_factory.fault("SomeNewFaultType")])
+    odd = evohome_factory.zone(name="odd", active_faults=[evohome_factory.fault("some_new_fault_type")])
     state.control_system.zones.append(odd)
 
     zones = list(controller_factory().get_zones(state.location))

@@ -1,7 +1,7 @@
 import inspect
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import NamedTuple
 from unittest.mock import AsyncMock, Mock
 
@@ -137,7 +137,8 @@ class FakeLocation:
     gateways: list = field(default_factory=list)
 
     def now(self):
-        return datetime.now()
+        # the real Location.now() returns an aware datetime, in the location's own timezone
+        return datetime.now(UTC)
 
     async def update(self):
         pass
