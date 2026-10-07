@@ -4,18 +4,24 @@
 
 # Evohome Helper
 
-This service adds presence detection to any Honeywell Evohome installation, turning the heating off when no-one is home. It also adjusts to your heating schedule in the decision to turn your heating off when you're not at home, making sure you still have a warm home after coming back from work.
+This service adds presence detection to any Honeywell Evohome installation, turning the heating down when no-one is home while keeping the home warm for when people arrive.
 
 Depends on Home Assistant for presence and weather information.
 
 ## Features
 
-- Presence detection (switches to the configured mode when no-one is home)
-- Use eco mode with warm weather to save energy
+- **Presence detection**: switches to the configured away mode when no-one is home.
+- **Pre-heating**: for a while after the schedule raises a setpoint, the heating stays on
+  even if no-one is detected yet, so the home is warm on arrival. A home that has been
+  empty for a longer period (holiday) is not pre-heated.
+- **Auto-eco**: uses Evohome's eco mode when it is warm outside.
 
 Presence is read from Home Assistant entities that report `home` when someone is home
 (`person.*` or `device_tracker.*`). The time the last person left is taken from the
 entity's state change time (`last_changed`).
+
+Manual changes on the thermostat (a system mode or a zone override set by hand) are
+left alone until they are cleared.
 
 ## Install via Home Assistant
 

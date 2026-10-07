@@ -1,5 +1,3 @@
-import pytest
-
 from dataclasses import replace
 from datetime import datetime
 from freezegun import freeze_time
@@ -55,50 +53,28 @@ def test_is_override_enabled_ignores_zones_with_unusable_data(controller_factory
     assert controller_factory()._is_override_enabled(state.control_system) is False
 
 
-async def test_set_mode_skips_when_override_enabled(controller_factory, evohome_factory):
+async def test_apply_skips_when_override_enabled(controller_factory, evohome_factory):
     state = evohome_factory.complete_state(zone_mode=ZoneMode.TEMPORARY_OVERRIDE)
 
-    await controller_factory()._set_mode(SystemMode.AUTO_WITH_ECO, state.location)
+    await controller_factory().apply(SystemMode.AUTO_WITH_ECO, state.location)
 
     state.control_system.set_mode.assert_not_awaited()
 
 
-async def test_set_mode_skips_when_mode_already_set(controller_factory, evohome_factory):
+async def test_apply_skips_when_mode_already_set(controller_factory, evohome_factory):
     state = evohome_factory.complete_state(system_mode=SystemMode.AUTO_WITH_ECO)
 
-    await controller_factory()._set_mode(SystemMode.AUTO_WITH_ECO, state.location)
+    await controller_factory().apply(SystemMode.AUTO_WITH_ECO, state.location)
 
     state.control_system.set_mode.assert_not_awaited()
 
 
-async def test_set_mode_updates_control_system_when_allowed(controller_factory, evohome_factory):
+async def test_apply_updates_control_system_when_allowed(controller_factory, evohome_factory):
     state = evohome_factory.complete_state(system_mode=SystemMode.AUTO, zone_mode=ZoneMode.FOLLOW_SCHEDULE)
 
-    await controller_factory()._set_mode(SystemMode.AUTO_WITH_ECO, state.location)
+    await controller_factory().apply(SystemMode.AUTO_WITH_ECO, state.location)
 
     state.control_system.set_mode.assert_awaited_once_with(SystemMode.AUTO_WITH_ECO)
-
-
-@pytest.mark.parametrize(
-    "auto_eco_enabled,schedule_setpoint,outside_temp,expected",
-    [
-        (False, 20, 30, True),
-        (True, 20, None, True),
-        (True, 20, 13, True),
-        (True, 20, 20, False),
-        (True, 20, 17, True),
-        # boundary rows: pin the strict inequalities (outside < threshold, outside + diff < highest)
-        (True, 16, 14, False),   # outside == outside_temp_threshold
-        (True, 20, 18, False),   # outside + inside_temp_diff == highest_setpoint
-    ],
-)
-async def test_is_normal_heating_needed_paths(controller_factory, evohome_factory, settings, auto_eco_enabled, schedule_setpoint, outside_temp, expected):
-    state = evohome_factory.complete_state(schedule=evohome_factory.uniform_schedule(setpoint=schedule_setpoint))
-    config = replace(settings, auto_eco_enabled=auto_eco_enabled, auto_eco_outside_temp_threshold=14, auto_eco_inside_temp_diff=2)
-    controller = controller_factory(config=config, outside_temp=outside_temp)
-
-    with freeze_time("2024-04-10 08:00:00"):
-        assert await controller._is_normal_heating_needed(state.location) is expected
 
 
 def test_get_active_setpoint_picks_most_recent_switchpoint(evohome_factory):
@@ -111,30 +87,14 @@ def test_get_active_setpoint_picks_most_recent_switchpoint(evohome_factory):
     assert evohome._get_active_setpoint(state.zone, datetime(2024, 4, 10, 13, 0, 0)) == 16.0
 
 
-async def test_is_normal_heating_needed_flips_when_schedule_crosses_switchpoint(controller_factory, evohome_factory, settings):
-    """The auto-eco comparison must use the currently active setpoint, not just any."""
-    sp_morning = evohome_factory.switchpoint("07:00:00", 21)
-    sp_noon = evohome_factory.switchpoint("12:00:00", 16)
-    daily = [evohome_factory.day_schedule(d, [sp_morning, sp_noon]) for d in range(7)]
-    state = evohome_factory.complete_state(schedule=daily)
-    config = replace(settings, auto_eco_enabled=True, auto_eco_outside_temp_threshold=14, auto_eco_inside_temp_diff=2)
-    controller = controller_factory(config=config, outside_temp=18)
-
-    with freeze_time("2024-04-10 11:00:00"):  # active setpoint 21: 18 + 2 < 21 -> heat normally
-        assert await controller._is_normal_heating_needed(state.location) is True
-
-    with freeze_time("2024-04-10 13:00:00"):  # active setpoint 16: 18 + 2 >= 16 -> eco
-        assert await controller._is_normal_heating_needed(state.location) is False
-
-
-def test_get_highest_set_point_temp_takes_max_across_zones(controller_factory, evohome_factory):
+def test_get_highest_scheduled_setpoint_takes_max_across_zones(controller_factory, evohome_factory):
     warm_zone = evohome_factory.zone(name="Living", schedule=evohome_factory.uniform_schedule(setpoint=21))
     cool_zone = evohome_factory.zone(name="Hall", schedule=evohome_factory.uniform_schedule(setpoint=16))
     control_system = evohome_factory.control_system(zones=[cool_zone, warm_zone])
     location = evohome_factory.location(control_systems=[control_system])
 
     with freeze_time("2024-04-10 08:00:00"):
-        assert controller_factory()._get_highest_set_point_temp(location) == 21.0
+        assert controller_factory().get_highest_scheduled_setpoint(location) == 21.0
 
 
 def test_is_in_preheat_window(controller_factory, evohome_factory, settings):
@@ -223,19 +183,11 @@ def test_get_active_setpoint_returns_none_when_zone_has_no_schedule(evohome_fact
     assert evohome._get_active_setpoint(state.zone, now) is None
 
 
-def test_get_highest_set_point_temp_returns_none_when_no_valid_setpoints(controller_factory, evohome_factory):
+def test_get_highest_scheduled_setpoint_returns_none_when_no_valid_setpoints(controller_factory, evohome_factory):
     state = evohome_factory.complete_state(schedule=[])
 
     with freeze_time("2024-04-10 08:00:00"):
-        assert controller_factory()._get_highest_set_point_temp(state.location) is None
-
-
-async def test_is_normal_heating_needed_when_no_valid_active_setpoint(controller_factory, evohome_factory, settings):
-    state = evohome_factory.complete_state(schedule=[])
-    controller = controller_factory(config=replace(settings, auto_eco_enabled=True), outside_temp=25)
-
-    with freeze_time("2024-04-10 08:00:00"):
-        assert await controller._is_normal_heating_needed(state.location) is True
+        assert controller_factory().get_highest_scheduled_setpoint(state.location) is None
 
 
 def test_get_last_setpoint_increase_survives_a_following_decrease(evohome_factory):
@@ -302,31 +254,3 @@ def test_get_zones_keeps_zones_with_unknown_fault_types(controller_factory, evoh
     zones = list(controller_factory().get_zones(state.location))
 
     assert zones == [state.zone, odd]
-
-
-async def test_set_normal_selects_auto_or_eco(controller_factory, evohome_factory, settings):
-    config = replace(settings, auto_eco_enabled=True, auto_eco_outside_temp_threshold=14, auto_eco_inside_temp_diff=2)
-
-    with freeze_time("2024-04-10 08:00:00"):
-        auto_state = evohome_factory.complete_state(system_mode=SystemMode.AUTO_WITH_ECO, schedule=evohome_factory.uniform_schedule(setpoint=20))
-        await controller_factory(config=config, outside_temp=10).set_normal(auto_state.location)
-        auto_state.control_system.set_mode.assert_awaited_once_with(SystemMode.AUTO)
-
-        eco_state = evohome_factory.complete_state(system_mode=SystemMode.AUTO, schedule=evohome_factory.uniform_schedule(setpoint=20))
-        await controller_factory(config=config, outside_temp=20).set_normal(eco_state.location)
-        eco_state.control_system.set_mode.assert_awaited_once_with(SystemMode.AUTO_WITH_ECO)
-
-
-async def test_set_away_uses_configured_away_mode(controller_factory, evohome_factory, settings):
-    state = evohome_factory.complete_state(system_mode=SystemMode.AUTO)
-
-    await controller_factory(config=replace(settings, evohome_away_mode="custom")).set_away(state.location)
-
-    state.control_system.set_mode.assert_awaited_once_with(SystemMode.CUSTOM)
-
-
-def test_validate_configuration_rejects_unknown_away_mode(controller_factory, settings):
-    controller = controller_factory(config=replace(settings, evohome_away_mode="nope"))
-
-    with pytest.raises(ValueError):
-        controller.validate_configuration()

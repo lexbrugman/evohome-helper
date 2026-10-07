@@ -2,9 +2,10 @@ import asyncio
 import json
 import logging
 import os
+import time
 
 from collections.abc import Iterator
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 import aiohttp
 
@@ -124,7 +125,9 @@ class EvohomeService:
         self._settings = settings
         self._client: EvohomeClient | None = None
         self._websession: aiohttp.ClientSession | None = None
-        self._schedule_refresh_times: dict[str, datetime] = {}
+        # zone id -> time.monotonic() of its last schedule refresh: elapsed time, which
+        # wall-clock time gets wrong across DST changes and clock adjustments
+        self._schedule_refresh_times: dict[str, float] = {}
         # serialize client creation so concurrent callers cannot each open a session
         self._lock = asyncio.Lock()
 
@@ -195,7 +198,7 @@ class EvohomeService:
         zones = [zone for system in get_control_systems(location) for zone in system.zones if self._schedule_needs_refresh(zone)]
         results = await asyncio.gather(*(self._fetch_schedule(zone) for zone in zones), return_exceptions=True)
 
-        # every fetch has finished (none is left running detached), so now report the failure
+        # every fetch has finished (none is left running detached); then report the failure
         errors = [result for result in results if isinstance(result, BaseException)]
         if errors:
             raise errors[0]
@@ -208,8 +211,8 @@ class EvohomeService:
             # a zone without a (valid) schedule; zone.schedule keeps raising, which the
             # schedule calculations treat as having no switch points
             pass
-        self._schedule_refresh_times[zone.id] = datetime.now()
+        self._schedule_refresh_times[zone.id] = time.monotonic()
 
     def _schedule_needs_refresh(self, zone: Zone) -> bool:
         last_refresh = self._schedule_refresh_times.get(zone.id)
-        return last_refresh is None or datetime.now() - last_refresh >= _SCHEDULE_REFRESH_INTERVAL
+        return last_refresh is None or time.monotonic() - last_refresh >= _SCHEDULE_REFRESH_INTERVAL.total_seconds()

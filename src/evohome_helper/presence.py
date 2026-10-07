@@ -57,25 +57,25 @@ class PresenceTracker:
         for entity_id in self._settings.homeassistant_presence_entities:
             await self._read(entity_id)
 
-    def is_someone_home(self) -> bool:
-        return any(home.present for home in self._home_records())
+    def is_someone_home(self) -> bool | None:
+        # None when no entity has ever been read successfully: unknown, NOT "away" --
+        # fabricating an away reading would let a Home Assistant outage turn the heating down
+        records = list(self._home_records())
+        if not records:
+            return None
+        return any(home.present for home in records)
 
     def was_someone_home_recently(self) -> bool:
         """Whether anyone left home within the configured window: a home in daily use
         gets pre-heated for the schedule, a home empty for days (holiday) does not."""
         # computed at query time so that a reading that cannot be refreshed ages out of
-        # the window instead of staying in it
+        # the window instead of staying in it; UTC because it is compared with Home
+        # Assistant's aware timestamps, for which any zone would do
         now = datetime.now(UTC)
         return any(
             home.left_at is not None and (now - home.left_at).total_seconds() <= self._settings.presence_last_home_grace_time
             for home in self._home_records()
         )
-
-    def is_presence_known(self) -> bool:
-        # whether any entity has ever been read successfully; without a reading there is
-        # nothing to act on -- fabricating an away reading would let an HA outage turn
-        # the heating down
-        return any(entity_id in self._zones for entity_id in self._settings.homeassistant_presence_entities)
 
     def _home_records(self):
         for entity_id in self._settings.homeassistant_presence_entities:

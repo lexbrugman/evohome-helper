@@ -27,19 +27,18 @@ def _preheat_schedule(evohome_factory, *, in_window):
 def _fake_presence(*, someone_home=False, recently_home=False, known=True):
     presence = Mock()
     presence.refresh = AsyncMock()
-    presence.is_someone_home = Mock(return_value=someone_home)
+    presence.is_someone_home = Mock(return_value=someone_home if known else None)
     presence.was_someone_home_recently = Mock(return_value=recently_home)
-    presence.is_presence_known = Mock(return_value=known)
     return presence
 
 
-def _build_app(settings, service, presence):
+def _build_app(settings, service, presence, outside_temp=10):
     weather = Mock()
-    weather.get_current_temperature = AsyncMock(return_value=10)
-    controller = EvohomeController(service, weather, settings)
+    weather.get_current_temperature = AsyncMock(return_value=outside_temp)
+    controller = EvohomeController(service, settings)
     homeassistant = Mock()
     homeassistant.close = AsyncMock()
-    return main.Application(settings, service, controller, presence, homeassistant)
+    return main.Application(settings, service, controller, presence, weather, homeassistant)
 
 
 @pytest.mark.parametrize(
@@ -120,13 +119,38 @@ async def test_thermostat_unchanged_when_presence_unknown(make_service, evohome_
     state.control_system.set_mode.assert_not_awaited()
 
 
+async def test_set_thermostat_mode_uses_eco_when_warm_outside(make_service, evohome_factory, settings):
+    """The weather reading reaches the policy: warm outside with someone home means eco."""
+    state = evohome_factory.complete_state(system_mode=SystemMode.AUTO, setpoint=20)
+    service = make_service(locations=[state.location])
+    config = replace(settings, auto_eco_enabled=True, auto_eco_outside_temp_threshold=14, auto_eco_inside_temp_diff=2)
+    app = _build_app(config, service, _fake_presence(someone_home=True), outside_temp=20)
+
+    with freeze_time("2024-04-10 08:00:00"):
+        await app.determine_and_set_thermostat_mode()
+
+    state.control_system.set_mode.assert_awaited_once_with(SystemMode.AUTO_WITH_ECO)
+
+
+async def test_set_thermostat_mode_skips_the_weather_when_auto_eco_is_disabled(make_service, evohome_factory, settings):
+    state = evohome_factory.complete_state(system_mode=SystemMode.AUTO_WITH_ECO)
+    service = make_service(locations=[state.location])
+    app = _build_app(replace(settings, auto_eco_enabled=False), service, _fake_presence(someone_home=True))
+
+    with freeze_time("2024-04-10 08:00:00"):
+        await app.determine_and_set_thermostat_mode()
+
+    app._weather.get_current_temperature.assert_not_awaited()
+    state.control_system.set_mode.assert_awaited_once_with(SystemMode.AUTO)
+
+
 def _minimal_app(settings, *, interval):
     service = Mock()
     service.close = AsyncMock()
     service.reset = AsyncMock()
     homeassistant = Mock()
     homeassistant.close = AsyncMock()
-    return main.Application(replace(settings, interval=interval), service, Mock(), Mock(), homeassistant)
+    return main.Application(replace(settings, interval=interval), service, Mock(), Mock(), Mock(), homeassistant)
 
 
 async def test_run_shuts_down_gracefully_on_sigterm(settings):

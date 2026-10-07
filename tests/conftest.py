@@ -276,13 +276,10 @@ def make_service(settings):
 @pytest.fixture
 def controller_factory(settings):
     """Build an EvohomeController wired to a real EvohomeService (thin passthrough to the
-    fake control systems) and a stubbed weather service returning `outside_temp`."""
+    fake control systems)."""
 
-    def _build(config=None, outside_temp=None):
+    def _build(config=None):
         config = config or settings
-        service = EvohomeService(config)
-        weather = Mock()
-        weather.get_current_temperature = AsyncMock(return_value=outside_temp)
-        return EvohomeController(service, weather, config)
+        return EvohomeController(EvohomeService(config), config)
 
     return _build

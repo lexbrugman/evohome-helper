@@ -20,7 +20,7 @@ class HomeAssistantClient:
                 response.raise_for_status()
                 return await response.json()
         except Exception as error:
-            # one line per failure, not a traceback per entity per cycle during an outage
+            # a single warning line per failure keeps the log readable during an outage
             logger.warning("failed getting the state of entity '%s': %r", entity_id, error)
             return None
 

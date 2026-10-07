@@ -98,8 +98,7 @@ async def test_nothing_is_known_before_a_successful_reading(fake_homeassistant, 
 
     await tracker.refresh()
 
-    assert tracker.is_presence_known() is False
-    assert tracker.is_someone_home() is False
+    assert tracker.is_someone_home() is None
     assert tracker.was_someone_home_recently() is False
 
 
@@ -111,8 +110,7 @@ async def test_unavailable_entity_is_not_a_reading(fake_homeassistant, settings)
 
     await tracker.refresh()
 
-    assert tracker.is_someone_home() is False
-    assert tracker.is_presence_known() is False
+    assert tracker.is_someone_home() is None
 
 
 async def test_unavailable_entity_keeps_last_known_presence(fake_homeassistant, settings, caplog):
@@ -178,7 +176,7 @@ async def test_unusable_last_changed_does_not_count_as_recent(fake_homeassistant
 
     assert tracker.was_someone_home_recently() is False
     # the entities are still valid presence readings
-    assert tracker.is_presence_known() is True
+    assert tracker.is_someone_home() is False
 
 
 async def test_unusable_last_changed_is_backfilled_by_the_next_reading(fake_homeassistant, settings):

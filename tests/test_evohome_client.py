@@ -142,7 +142,7 @@ async def test_token_cache_from_another_account_is_ignored(tmp_path):
 
 
 async def test_token_cache_without_account_binding_is_ignored(tmp_path):
-    # a cache written before the username was stored cannot be attributed to an account
+    # a cache without an account binding (e.g. from an older version) cannot be attributed to an account
     cache_path = tmp_path / "tokens.json"
     cache_path.write_text(json.dumps({
         "access_token": "access",
@@ -368,7 +368,7 @@ async def test_get_location_refetches_schedules_after_refresh_interval(make_serv
     service = make_service(locations=[state.location])
 
     await service.get_location()
-    service._schedule_refresh_times[state.zone.id] -= evohome_client._SCHEDULE_REFRESH_INTERVAL
+    service._schedule_refresh_times[state.zone.id] -= evohome_client._SCHEDULE_REFRESH_INTERVAL.total_seconds()
     await service.get_location()
 
     assert state.zone.get_schedule.await_count == 2

@@ -10,6 +10,7 @@ from logging import config as log_config
 from evohome_helper.evohome import EvohomeController
 from evohome_helper.evohome_client import EvohomeService, LocationNotFound, is_transient_error
 from evohome_helper.homeassistant import HomeAssistantClient
+from evohome_helper.policy import Situation, decide, validate_configuration
 from evohome_helper.presence import PresenceTracker
 from evohome_helper.weather import WeatherService
 from settings import Settings
@@ -27,12 +28,14 @@ class Application:
         evohome_service: EvohomeService,
         controller: EvohomeController,
         presence: PresenceTracker,
+        weather: WeatherService,
         homeassistant: HomeAssistantClient,
     ):
         self._settings = settings
         self._evohome_service = evohome_service
         self._controller = controller
         self._presence = presence
+        self._weather = weather
         self._homeassistant = homeassistant
 
     async def determine_and_set_thermostat_mode(self) -> None:
@@ -53,22 +56,23 @@ class Application:
                 setpoint_status["setpoint_mode"],
             )
 
-        if self._presence.is_someone_home():
-            logger.info("someone is home")
-            await self._controller.set_normal(location)
+        situation = Situation(
+            someone_home=self._presence.is_someone_home(),
+            someone_home_recently=self._presence.was_someone_home_recently(),
+            in_preheat_window=self._controller.is_in_preheat_window(location),
+            highest_scheduled_setpoint=self._controller.get_highest_scheduled_setpoint(location),
+            # fetched before deciding so the policy stays free of I/O; only auto-eco uses
+            # it, so this costs one local Home Assistant call per cycle that the away and
+            # unchanged decisions ignore (and, during a weather outage, up to the client's
+            # 5s timeout per cycle)
+            outside_temperature=await self._weather.get_current_temperature() if self._settings.auto_eco_enabled else None,
+        )
 
-        else:
-            logger.info("no one is home")
+        decision = decide(situation, self._settings)
+        logger.info(decision.reason)
 
-            if not self._presence.is_presence_known():
-                logger.warning("presence could not be determined; leaving the thermostat unchanged")
-                return
-
-            if self._presence.was_someone_home_recently() and self._controller.is_in_preheat_window(location):
-                logger.info("pre-heating after a scheduled setpoint increase; the home is in daily use")
-                await self._controller.set_normal(location)
-            else:
-                await self._controller.set_away(location)
+        if decision.mode is not None:
+            await self._controller.apply(decision.mode, location)
 
     async def run(self) -> None:
         shutdown_event = asyncio.Event()
@@ -123,11 +127,11 @@ def build_application(settings: Settings) -> Application:
     presence = PresenceTracker(homeassistant, settings)
     weather = WeatherService(homeassistant, settings)
     evohome_service = EvohomeService(settings)
-    controller = EvohomeController(evohome_service, weather, settings)
+    controller = EvohomeController(evohome_service, settings)
 
-    controller.validate_configuration()
+    validate_configuration(settings)
 
-    return Application(settings, evohome_service, controller, presence, homeassistant)
+    return Application(settings, evohome_service, controller, presence, weather, homeassistant)
 
 
 async def main() -> None:
