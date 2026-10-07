@@ -58,11 +58,13 @@ def test_load_maps_the_options_json_structure(monkeypatch, tmp_path):
     assert settings.interval == 300
 
 
-def test_load_treats_an_empty_weather_entity_as_not_configured(monkeypatch, tmp_path):
+@pytest.mark.parametrize("weather_entity", [{"weather_entity": ""}, {}], ids=["empty", "absent"])
+def test_load_treats_an_empty_or_absent_weather_entity_as_not_configured(monkeypatch, tmp_path, weather_entity):
+    # the add-on marks the option as optional (str?), so the key may be missing entirely
     options = {
         "evohome": {"location_name": "MyHome", "username": "u", "password": "p", "away_mode": "eco"},
         "presence": {"entities": [], "last_home_grace_time": 1200, "heating_schedule_grace_time": 1800},
-        "auto_eco": {"enabled": False, "weather_entity": "", "outside_temp_threshold": 14.5, "inside_temp_diff": 2.0},
+        "auto_eco": {"enabled": False, "outside_temp_threshold": 14.5, "inside_temp_diff": 2.0, **weather_entity},
         "interval": 300,
     }
     monkeypatch.setattr(settings_module, "_OPTIONS_PATH", _write_options(tmp_path, options))

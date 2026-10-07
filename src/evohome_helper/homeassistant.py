@@ -20,8 +20,10 @@ class HomeAssistantClient:
                 response.raise_for_status()
                 return await response.json()
         except Exception as error:
-            # a single warning line per failure keeps the log readable during an outage
-            logger.warning("failed getting the state of entity '%s': %r", entity_id, error)
+            # a single warning line per failure keeps the log readable during an outage;
+            # never %r: the repr of a ClientResponseError embeds the request headers,
+            # i.e. the bearer token
+            logger.warning("failed getting the state of entity '%s': %s: %s", entity_id, type(error).__name__, error)
             return None
 
     async def close(self) -> None:

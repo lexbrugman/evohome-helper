@@ -46,8 +46,8 @@ class Settings:
             homeassistant_url="http://supervisor/core",
             homeassistant_token=os.environ["SUPERVISOR_TOKEN"],
             homeassistant_presence_entities=config["presence"]["entities"],
-            # an empty entity id means "not configured", not an entity
-            homeassistant_auto_eco_weather_entity=config["auto_eco"]["weather_entity"] or None,
+            # the option is optional: an empty or absent entity id means "not configured"
+            homeassistant_auto_eco_weather_entity=config["auto_eco"].get("weather_entity") or None,
             presence_last_home_grace_time=config["presence"]["last_home_grace_time"],
             presence_heating_schedule_grace_time=config["presence"]["heating_schedule_grace_time"],
             auto_eco_enabled=config["auto_eco"]["enabled"],

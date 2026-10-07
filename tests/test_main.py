@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import os
 import signal
 
@@ -9,7 +10,7 @@ from freezegun import freeze_time
 from unittest.mock import AsyncMock, Mock
 
 from evohomeasync2 import SystemMode
-from evohomeasync2.exceptions import ApiCallFailedError, InvalidSystemModeError
+from evohomeasync2.exceptions import ApiCallFailedError, BadUserCredentialsError, InvalidSystemModeError
 
 import main
 
@@ -219,12 +220,38 @@ async def test_run_does_not_reset_on_errors_a_reset_cannot_cure(settings, error)
     app._evohome_service.reset.assert_not_awaited()
 
 
-async def test_run_exits_when_the_location_does_not_exist(settings):
-    # a misconfigured location name can never recover on its own
-    app = _minimal_app(settings, interval=60)
-    app.determine_and_set_thermostat_mode = AsyncMock(side_effect=LocationNotFound("Nowhere"))
+async def test_run_logs_a_transient_failure_as_one_line_and_a_bug_with_its_traceback(settings, caplog):
+    app = _minimal_app(settings, interval=0.01)
+    outcomes = [ApiCallFailedError("temporary failure", status=503), ValueError("bug")]
 
-    with pytest.raises(LocationNotFound):
+    async def scripted():
+        if not outcomes:
+            os.kill(os.getpid(), signal.SIGTERM)
+            return
+        raise outcomes.pop(0)
+
+    app.determine_and_set_thermostat_mode = scripted
+
+    await asyncio.wait_for(app.run(), timeout=5)
+
+    failures = [record for record in caplog.records if record.name == main.logger.name and record.levelno >= logging.WARNING]
+    assert [(record.levelno, record.exc_info is not None) for record in failures] == [(logging.WARNING, False), (logging.ERROR, True)]
+    assert "ApiCallFailedError: temporary failure" in failures[0].message
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        LocationNotFound("Nowhere"),  # a misconfigured location name
+        BadUserCredentialsError("invalid_grant", status=400),  # rejected credentials
+    ],
+)
+async def test_run_exits_on_a_misconfiguration_that_cannot_recover(settings, error):
+    # retrying would never help, and for credentials would hammer the vendor's auth endpoint
+    app = _minimal_app(settings, interval=60)
+    app.determine_and_set_thermostat_mode = AsyncMock(side_effect=error)
+
+    with pytest.raises(type(error)):
         await asyncio.wait_for(app.run(), timeout=2)
 
     app._evohome_service.reset.assert_not_awaited()

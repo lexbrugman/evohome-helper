@@ -12,7 +12,7 @@ import aiohttp
 from evohomeasync2 import ControlSystem, EvohomeClient, Location, SystemMode, Zone
 from evohomeasync2.auth import AbstractTokenManager
 from evohomeasync2.exceptions import ApiCallFailedError, AuthenticationFailedError, BadApiSchemaError, BadUserCredentialsError, InvalidScheduleError
-from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
+from tenacity import before_sleep_log, retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from settings import Settings
 
@@ -52,6 +52,8 @@ _retry = retry(
     retry=retry_if_exception(is_transient_error),
     wait=wait_exponential(),
     stop=stop_after_attempt(6),
+    # a retry that eventually succeeds would otherwise leave no trace of the flakiness
+    before_sleep=before_sleep_log(logger, logging.WARNING),
     reraise=True,
 )
 
@@ -62,6 +64,12 @@ _SCHEDULE_REFRESH_INTERVAL = timedelta(hours=1)
 class LocationNotFound(Exception):
     def __init__(self, location_name: str):
         super().__init__(f"the location '{location_name}' does not exist in the evohome account")
+
+
+# misconfiguration that can never recover on its own: the loop exits on these so the
+# problem is visible instead of being retried every interval (which, for rejected
+# credentials, would hammer the vendor's auth endpoint with failing logins)
+UNRECOVERABLE_ERRORS = (LocationNotFound, BadUserCredentialsError)
 
 
 # stored alongside the tokens so the cache is bound to the account it belongs to

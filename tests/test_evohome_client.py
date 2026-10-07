@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import stat
 
@@ -201,6 +202,26 @@ async def test_retry_retries_transient_errors():
 
     assert await flaky() == "ok"
     assert calls["count"] == 3
+
+
+async def test_retry_logs_every_attempt_it_retries(caplog):
+    # a retry that eventually succeeds must leave a trace of the flakiness
+    calls = {"count": 0}
+
+    @evohome_client._retry
+    async def flaky():
+        calls["count"] += 1
+        if calls["count"] < 3:
+            raise ApiCallFailedError("temporary failure")
+        return "ok"
+
+    flaky.retry.wait = wait_none()
+
+    await flaky()
+
+    retries = [record for record in caplog.records if record.levelno == logging.WARNING and record.message.startswith("Retrying")]
+    assert len(retries) == 2
+    assert "ApiCallFailedError: temporary failure" in retries[0].message
 
 
 async def test_retry_gives_up_immediately_on_bad_credentials():
