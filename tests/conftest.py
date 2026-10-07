@@ -13,7 +13,7 @@ from evohomeasync2.exceptions import InvalidScheduleError, InvalidSystemModeErro
 
 from evohome_helper.evohome import EvohomeController
 from evohome_helper.evohome_client import EvohomeService
-from settings import Settings
+from settings import AwayMode, Settings
 
 
 # aiohttp 3.14 made ClientResponse.stream_writer a required argument, which aioresponses
@@ -36,7 +36,7 @@ def make_settings(**overrides) -> Settings:
         evohome_location_name="Home",
         evohome_username="user",
         evohome_password="pass",
-        evohome_away_mode="away",
+        evohome_away_mode=AwayMode.AWAY,
         evohome_token_cache_path="/nonexistent/evohome_token_cache.json",
         homeassistant_url="http://ha.local",
         homeassistant_token="token",

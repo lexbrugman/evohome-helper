@@ -7,8 +7,8 @@ from evohomeasync2 import ControlSystem, DayOfWeek, FaultType, Location, SystemM
 from evohomeasync2.exceptions import InvalidScheduleError
 
 from evohome_helper.evohome_client import EvohomeService, get_control_systems
-from evohome_helper.policy import get_away_mode
-from settings import Settings
+from evohome_helper.policy import HeatingMode
+from settings import AwayMode, Settings
 
 logger = logging.getLogger(__name__)
 
@@ -86,12 +86,27 @@ def _get_last_setpoint_increase(zone: Zone, now: datetime) -> tuple[datetime, fl
     return last_increase
 
 
+# the vendor's mode for each away_mode option
+_AWAY_SYSTEM_MODES = {
+    AwayMode.AWAY: SystemMode.AWAY,
+    AwayMode.ECO: SystemMode.AUTO_WITH_ECO,
+    AwayMode.CUSTOM: SystemMode.CUSTOM,
+    AwayMode.OFF: SystemMode.HEATING_OFF,
+}
+
+
 class EvohomeController:
     """Evohome-side facts for the policy (zones, schedule) and applying its decision."""
 
     def __init__(self, evohome_service: EvohomeService, settings: Settings):
         self._evohome = evohome_service
         self._settings = settings
+        # the vendor's mode for each decision; any other mode is one the user set by hand
+        self._system_modes = {
+            HeatingMode.NORMAL: SystemMode.AUTO,
+            HeatingMode.ECO: SystemMode.AUTO_WITH_ECO,
+            HeatingMode.AWAY: _AWAY_SYSTEM_MODES[settings.evohome_away_mode],
+        }
 
     def get_zones(self, location: Location) -> Iterator[Zone]:
         for control_system in get_control_systems(location):
@@ -129,7 +144,8 @@ class EvohomeController:
         active_setpoints = (_get_active_setpoint(zone, now) for zone in self.get_zones(location))
         return max((setpoint for setpoint in active_setpoints if setpoint is not None), default=None)
 
-    async def apply(self, new_mode: SystemMode, location: Location) -> None:
+    async def apply(self, mode: HeatingMode, location: Location) -> None:
+        new_mode = self._system_modes[mode]
         for control_system in get_control_systems(location):
             if new_mode == control_system.mode:
                 continue
@@ -143,8 +159,7 @@ class EvohomeController:
 
     def _get_override_modes(self) -> set[SystemMode]:
         # a mode the user set by hand (anything we never set ourselves) must be left alone
-        excluded = {SystemMode.AUTO, SystemMode.AUTO_WITH_ECO, get_away_mode(self._settings)}
-        return set(SystemMode) - excluded
+        return set(SystemMode) - set(self._system_modes.values())
 
     def _is_override_enabled(self, control_system: ControlSystem) -> bool:
         if control_system.mode in self._get_override_modes():

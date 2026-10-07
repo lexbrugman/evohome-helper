@@ -1,3 +1,5 @@
+import pytest
+
 from dataclasses import replace
 from datetime import datetime
 from freezegun import freeze_time
@@ -5,6 +7,8 @@ from freezegun import freeze_time
 from evohomeasync2 import FaultType, SystemMode, ZoneMode
 
 from evohome_helper import evohome
+from evohome_helper.policy import HeatingMode
+from settings import AwayMode
 
 
 def test_factory_complete_state_supports_full_state_setup(evohome_factory):
@@ -16,7 +20,7 @@ def test_factory_complete_state_supports_full_state_setup(evohome_factory):
 
 
 def test_get_override_modes_excludes_expected_modes(controller_factory, settings):
-    controller = controller_factory(config=replace(settings, evohome_away_mode="away"))
+    controller = controller_factory(config=replace(settings, evohome_away_mode=AwayMode.AWAY))
 
     modes = controller._get_override_modes()
 
@@ -56,7 +60,7 @@ def test_is_override_enabled_ignores_zones_with_unusable_data(controller_factory
 async def test_apply_skips_when_override_enabled(controller_factory, evohome_factory):
     state = evohome_factory.complete_state(zone_mode=ZoneMode.TEMPORARY_OVERRIDE)
 
-    await controller_factory().apply(SystemMode.AUTO_WITH_ECO, state.location)
+    await controller_factory().apply(HeatingMode.ECO, state.location)
 
     state.control_system.set_mode.assert_not_awaited()
 
@@ -64,7 +68,7 @@ async def test_apply_skips_when_override_enabled(controller_factory, evohome_fac
 async def test_apply_skips_when_mode_already_set(controller_factory, evohome_factory):
     state = evohome_factory.complete_state(system_mode=SystemMode.AUTO_WITH_ECO)
 
-    await controller_factory().apply(SystemMode.AUTO_WITH_ECO, state.location)
+    await controller_factory().apply(HeatingMode.ECO, state.location)
 
     state.control_system.set_mode.assert_not_awaited()
 
@@ -72,9 +76,22 @@ async def test_apply_skips_when_mode_already_set(controller_factory, evohome_fac
 async def test_apply_updates_control_system_when_allowed(controller_factory, evohome_factory):
     state = evohome_factory.complete_state(system_mode=SystemMode.AUTO, zone_mode=ZoneMode.FOLLOW_SCHEDULE)
 
-    await controller_factory().apply(SystemMode.AUTO_WITH_ECO, state.location)
+    await controller_factory().apply(HeatingMode.ECO, state.location)
 
     state.control_system.set_mode.assert_awaited_once_with(SystemMode.AUTO_WITH_ECO)
+
+
+@pytest.mark.parametrize(
+    "away_mode,system_mode",
+    [(AwayMode.AWAY, SystemMode.AWAY), (AwayMode.ECO, SystemMode.AUTO_WITH_ECO), (AwayMode.CUSTOM, SystemMode.CUSTOM), (AwayMode.OFF, SystemMode.HEATING_OFF)],
+)
+async def test_apply_translates_away_into_the_configured_mode(controller_factory, evohome_factory, settings, away_mode, system_mode):
+    state = evohome_factory.complete_state(system_mode=SystemMode.AUTO)
+    controller = controller_factory(config=replace(settings, evohome_away_mode=away_mode))
+
+    await controller.apply(HeatingMode.AWAY, state.location)
+
+    state.control_system.set_mode.assert_awaited_once_with(system_mode)
 
 
 def test_get_active_setpoint_picks_most_recent_switchpoint(evohome_factory):

@@ -10,7 +10,7 @@ from logging import config as log_config
 from evohome_helper.evohome import EvohomeController
 from evohome_helper.evohome_client import UNRECOVERABLE_ERRORS, EvohomeService, is_transient_error
 from evohome_helper.homeassistant import HomeAssistantClient
-from evohome_helper.policy import Situation, decide, validate_configuration
+from evohome_helper.policy import Situation, decide
 from evohome_helper.presence import PresenceTracker
 from evohome_helper.weather import WeatherService
 from settings import Settings
@@ -130,8 +130,6 @@ def build_application(settings: Settings) -> Application:
     weather = WeatherService(homeassistant, settings)
     evohome_service = EvohomeService(settings)
     controller = EvohomeController(evohome_service, settings)
-
-    validate_configuration(settings)
 
     return Application(settings, evohome_service, controller, presence, weather, homeassistant)
 

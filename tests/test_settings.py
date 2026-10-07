@@ -4,7 +4,14 @@ import pytest
 
 import settings as settings_module
 
-from settings import Settings
+from settings import AwayMode, Settings
+
+_OPTIONS = {
+    "evohome": {"location_name": "MyHome", "username": "u", "password": "p", "away_mode": "eco"},
+    "presence": {"entities": [], "last_home_grace_time": 1200, "heating_schedule_grace_time": 1800},
+    "auto_eco": {"enabled": False, "weather_entity": "", "outside_temp_threshold": 14.5, "inside_temp_diff": 2.0},
+    "interval": 300,
+}
 
 
 def _write_options(tmp_path, options):
@@ -44,7 +51,7 @@ def test_load_maps_the_options_json_structure(monkeypatch, tmp_path):
     assert settings.evohome_location_name == "MyHome"
     assert settings.evohome_username == "user@example.org"
     assert settings.evohome_password == "secret"
-    assert settings.evohome_away_mode == "eco"
+    assert settings.evohome_away_mode == AwayMode.ECO
     assert settings.evohome_token_cache_path == "/data/evohome_token_cache.json"
     assert settings.homeassistant_url == "http://supervisor/core"
     assert settings.homeassistant_token == "supervisor-token"
@@ -58,19 +65,36 @@ def test_load_maps_the_options_json_structure(monkeypatch, tmp_path):
     assert settings.interval == 300
 
 
+def _load(monkeypatch, tmp_path, **sections) -> Settings:
+    # each given section replaces the default one
+    monkeypatch.setattr(settings_module, "_OPTIONS_PATH", _write_options(tmp_path, {**_OPTIONS, **sections}))
+    monkeypatch.setenv("SUPERVISOR_TOKEN", "supervisor-token")
+    return Settings.load()
+
+
 @pytest.mark.parametrize("weather_entity", [{"weather_entity": ""}, {}], ids=["empty", "absent"])
 def test_load_treats_an_empty_or_absent_weather_entity_as_not_configured(monkeypatch, tmp_path, weather_entity):
     # the add-on marks the option as optional (str?), so the key may be missing entirely
-    options = {
-        "evohome": {"location_name": "MyHome", "username": "u", "password": "p", "away_mode": "eco"},
-        "presence": {"entities": [], "last_home_grace_time": 1200, "heating_schedule_grace_time": 1800},
-        "auto_eco": {"enabled": False, "outside_temp_threshold": 14.5, "inside_temp_diff": 2.0, **weather_entity},
-        "interval": 300,
-    }
-    monkeypatch.setattr(settings_module, "_OPTIONS_PATH", _write_options(tmp_path, options))
-    monkeypatch.setenv("SUPERVISOR_TOKEN", "supervisor-token")
+    auto_eco = {"enabled": False, "outside_temp_threshold": 14.5, "inside_temp_diff": 2.0, **weather_entity}
 
-    assert Settings.load().homeassistant_auto_eco_weather_entity is None
+    assert _load(monkeypatch, tmp_path, auto_eco=auto_eco).homeassistant_auto_eco_weather_entity is None
+
+
+@pytest.mark.parametrize(
+    "name,mode",
+    [("away", AwayMode.AWAY), ("eco", AwayMode.ECO), ("custom", AwayMode.CUSTOM), ("off", AwayMode.OFF)],
+)
+def test_load_parses_the_away_mode_by_its_option_name(monkeypatch, tmp_path, name, mode):
+    evohome = {**_OPTIONS["evohome"], "away_mode": name}
+
+    assert _load(monkeypatch, tmp_path, evohome=evohome).evohome_away_mode == mode
+
+
+def test_load_rejects_an_unknown_away_mode(monkeypatch, tmp_path):
+    evohome = {**_OPTIONS["evohome"], "away_mode": "day_off"}
+
+    with pytest.raises(ValueError, match="day_off"):
+        _load(monkeypatch, tmp_path, evohome=evohome)
 
 
 @pytest.mark.parametrize("interval", [0, -5])

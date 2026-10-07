@@ -2,9 +2,20 @@ import json
 import os
 
 from dataclasses import dataclass
+from enum import StrEnum
 
 # where the Home Assistant supervisor mounts the add-on configuration
 _OPTIONS_PATH = "/data/options.json"
+
+
+class AwayMode(StrEnum):
+    """The away_mode option, by the names the add-on schema offers (its match(...) list
+    in ha-apps must stay identical to these values)."""
+
+    AWAY = "away"
+    ECO = "eco"
+    CUSTOM = "custom"
+    OFF = "off"
 
 
 @dataclass(frozen=True)
@@ -12,7 +23,7 @@ class Settings:
     evohome_location_name: str
     evohome_username: str
     evohome_password: str
-    evohome_away_mode: str
+    evohome_away_mode: AwayMode
     evohome_token_cache_path: str
     homeassistant_url: str
     homeassistant_token: str
@@ -41,7 +52,8 @@ class Settings:
             evohome_location_name=config["evohome"]["location_name"],
             evohome_username=config["evohome"]["username"],
             evohome_password=config["evohome"]["password"],
-            evohome_away_mode=config["evohome"]["away_mode"],
+            # an unknown name is rejected here, at startup, not deep inside the loop
+            evohome_away_mode=AwayMode(config["evohome"]["away_mode"]),
             evohome_token_cache_path="/data/evohome_token_cache.json",
             homeassistant_url="http://supervisor/core",
             homeassistant_token=os.environ["SUPERVISOR_TOKEN"],

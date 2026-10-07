@@ -2,9 +2,7 @@ import pytest
 
 from dataclasses import replace
 
-from evohomeasync2 import SystemMode
-
-from evohome_helper.policy import Situation, decide, get_away_mode, validate_configuration
+from evohome_helper.policy import HeatingMode, Situation, decide
 
 
 def _situation(**overrides):
@@ -16,12 +14,12 @@ def _situation(**overrides):
 @pytest.mark.parametrize(
     "someone_home,someone_home_recently,in_preheat_window,expected_mode",
     [
-        (True, False, False, SystemMode.AUTO),
-        (False, True, True, SystemMode.AUTO),
-        (False, False, False, SystemMode.AWAY),
+        (True, False, False, HeatingMode.NORMAL),
+        (False, True, True, HeatingMode.NORMAL),
+        (False, False, False, HeatingMode.AWAY),
         # exactly one condition active must still mean away: both conjuncts are load-bearing
-        (False, True, False, SystemMode.AWAY),
-        (False, False, True, SystemMode.AWAY),
+        (False, True, False, HeatingMode.AWAY),
+        (False, False, True, HeatingMode.AWAY),
     ],
 )
 def test_decide_presence_scenarios(settings, someone_home, someone_home_recently, in_preheat_window, expected_mode):
@@ -40,24 +38,18 @@ def test_decide_leaves_the_thermostat_alone_when_presence_is_unknown(settings):
     assert "unchanged" in decision.reason
 
 
-def test_decide_uses_the_configured_away_mode(settings):
-    config = replace(settings, evohome_away_mode="custom")
-
-    assert decide(_situation(), config).mode == SystemMode.CUSTOM
-
-
 @pytest.mark.parametrize(
     "auto_eco_enabled,highest_setpoint,outside_temp,expected_mode",
     [
-        (False, 20, 30, SystemMode.AUTO),
-        (True, None, 30, SystemMode.AUTO),  # no zone with a usable schedule
-        (True, 20, None, SystemMode.AUTO),  # outside temperature unknown
-        (True, 20, 13, SystemMode.AUTO),  # cold outside
-        (True, 20, 17, SystemMode.AUTO),  # 17 + 2 < 20: zones still need real heat
-        (True, 20, 20, SystemMode.AUTO_WITH_ECO),
+        (False, 20, 30, HeatingMode.NORMAL),
+        (True, None, 30, HeatingMode.NORMAL),  # no zone with a usable schedule
+        (True, 20, None, HeatingMode.NORMAL),  # outside temperature unknown
+        (True, 20, 13, HeatingMode.NORMAL),  # cold outside
+        (True, 20, 17, HeatingMode.NORMAL),  # 17 + 2 < 20: zones still need real heat
+        (True, 20, 20, HeatingMode.ECO),
         # boundary rows: pin the strict inequalities (outside < threshold, outside + diff < highest)
-        (True, 16, 14, SystemMode.AUTO_WITH_ECO),  # outside == outside_temp_threshold
-        (True, 20, 18, SystemMode.AUTO_WITH_ECO),  # outside + inside_temp_diff == highest setpoint
+        (True, 16, 14, HeatingMode.ECO),  # outside == outside_temp_threshold
+        (True, 20, 18, HeatingMode.ECO),  # outside + inside_temp_diff == highest setpoint
     ],
 )
 def test_decide_auto_eco_when_someone_is_home(settings, auto_eco_enabled, highest_setpoint, outside_temp, expected_mode):
@@ -71,7 +63,7 @@ def test_decide_applies_auto_eco_to_preheating_too(settings):
     config = replace(settings, auto_eco_enabled=True, auto_eco_outside_temp_threshold=14, auto_eco_inside_temp_diff=2)
     situation = _situation(someone_home=False, someone_home_recently=True, in_preheat_window=True, highest_scheduled_setpoint=20, outside_temperature=20)
 
-    assert decide(situation, config).mode == SystemMode.AUTO_WITH_ECO
+    assert decide(situation, config).mode == HeatingMode.ECO
 
 
 def test_decide_reason_explains_the_eco_choice(settings):
@@ -81,12 +73,3 @@ def test_decide_reason_explains_the_eco_choice(settings):
 
     assert reason.startswith("someone is home")
     assert "eco" in reason
-
-
-def test_get_away_mode_maps_the_configured_name(settings):
-    assert get_away_mode(replace(settings, evohome_away_mode="eco")) == SystemMode.AUTO_WITH_ECO
-
-
-def test_validate_configuration_rejects_unknown_away_mode(settings):
-    with pytest.raises(ValueError):
-        validate_configuration(replace(settings, evohome_away_mode="nope"))
