@@ -46,6 +46,15 @@ def test_is_override_enabled_false_when_schedule_followed(controller_factory, ev
     assert controller_factory()._is_override_enabled(state.control_system) is False
 
 
+def test_is_override_enabled_ignores_zones_with_unusable_data(controller_factory, evohome_factory):
+    # a comms-lost zone stuck in an override must not block mode changes forever
+    state = evohome_factory.complete_state()
+    stuck = evohome_factory.zone(name="stuck", mode=ZoneMode.PERMANENT_OVERRIDE, active_faults=[evohome_factory.fault(FaultType.ZON_A_CL)])
+    state.control_system.zones.append(stuck)
+
+    assert controller_factory()._is_override_enabled(state.control_system) is False
+
+
 async def test_set_mode_skips_when_override_enabled(controller_factory, evohome_factory):
     state = evohome_factory.complete_state(zone_mode=ZoneMode.TEMPORARY_OVERRIDE)
 
@@ -167,6 +176,15 @@ def test_get_zone_switch_points_flattens_and_sorts(evohome_factory):
     assert len(switch_points) == 14
     datetimes = [dt for dt, _ in switch_points]
     assert datetimes == sorted(datetimes)
+
+
+def test_get_zone_switch_points_accepts_times_without_seconds(evohome_factory):
+    state = evohome_factory.complete_state(schedule=evohome_factory.uniform_schedule(20, "07:00"))
+
+    now = datetime(2024, 4, 10, 8, 0, 0)
+    switch_points = evohome._get_zone_switch_points(state.zone, now)
+
+    assert switch_points[-1] == (datetime(2024, 4, 10, 7, 0, 0), 20.0)
 
 
 def test_get_zone_switch_points_week_boundary_sunday_to_monday(evohome_factory):

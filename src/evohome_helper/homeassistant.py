@@ -19,8 +19,9 @@ class HomeAssistantClient:
             async with self._get_session().get(url, headers=self._headers()) as response:
                 response.raise_for_status()
                 return await response.json()
-        except Exception:
-            logger.exception("failed getting the state of entity '%s'", entity_id)
+        except Exception as error:
+            # one line per failure, not a traceback per entity per cycle during an outage
+            logger.warning("failed getting the state of entity '%s': %r", entity_id, error)
             return None
 
     async def close(self) -> None:

@@ -1,7 +1,7 @@
 import logging
 
 from collections.abc import Iterator
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 
 from evohomeasync2 import ControlSystem, DayOfWeek, FaultType, Location, SystemMode, Zone, ZoneMode
 from evohomeasync2.exceptions import InvalidScheduleError
@@ -39,6 +39,10 @@ def _zone_data_is_unusable(zone: Zone) -> bool:
     return any(fault["fault_type"] in _DATA_UNUSABLE_FAULTS for fault in zone.active_faults)
 
 
+def _usable_zones(control_system: ControlSystem) -> Iterator[Zone]:
+    return (zone for zone in control_system.zones if not _zone_data_is_unusable(zone))
+
+
 def get_current_time(location: Location) -> datetime:
     return location.now().replace(microsecond=0)
 
@@ -46,9 +50,8 @@ def get_current_time(location: Location) -> datetime:
 def _switchpoint_to_datetime(day_of_week: str, time_of_day: str, now: datetime) -> datetime:
     target_weekday = _WEEKDAY_INDEX[str(day_of_week).lower()]
     days_ago = (now.weekday() - target_weekday) % 7
-    hour, minute, second = (int(x) for x in time_of_day.split(":"))
     switchpoint_date = now.date() - timedelta(days=days_ago)
-    switchpoint_datetime = datetime(switchpoint_date.year, switchpoint_date.month, switchpoint_date.day, hour, minute, second, tzinfo=now.tzinfo)
+    switchpoint_datetime = datetime.combine(switchpoint_date, time.fromisoformat(time_of_day), tzinfo=now.tzinfo)
     if switchpoint_datetime > now:
         switchpoint_datetime -= timedelta(weeks=1)
     return switchpoint_datetime
@@ -91,11 +94,7 @@ class EvohomeController:
 
     def get_zones(self, location: Location) -> Iterator[Zone]:
         for control_system in get_control_systems(location):
-            for zone in control_system.zones:
-                if _zone_data_is_unusable(zone):
-                    continue
-
-                yield zone
+            yield from _usable_zones(control_system)
 
     def is_in_schedule_grace_period(self, location: Location) -> bool:
         now = get_current_time(location)
@@ -148,7 +147,7 @@ class EvohomeController:
     def _get_desired_away_mode(self) -> SystemMode:
         return _AWAY_MODE_MAP[self._settings.evohome_away_mode]
 
-    def _get_override_modes(self) -> set:
+    def _get_override_modes(self) -> set[SystemMode]:
         excluded = {SystemMode.AUTO, SystemMode.AUTO_WITH_ECO, self._get_desired_away_mode()}
         return set(SystemMode) - excluded
 
@@ -156,7 +155,8 @@ class EvohomeController:
         if control_system.mode in self._get_override_modes():
             return True
 
-        return any(zone.mode != ZoneMode.FOLLOW_SCHEDULE for zone in control_system.zones)
+        # a zone whose data is unusable cannot report a meaningful mode either
+        return any(zone.mode != ZoneMode.FOLLOW_SCHEDULE for zone in _usable_zones(control_system))
 
     async def _is_normal_heating_needed(self, location: Location) -> bool:
         if not self._settings.auto_eco_enabled:

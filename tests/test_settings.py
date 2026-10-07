@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 import settings as settings_module
 
 from settings import Settings
@@ -56,3 +58,24 @@ def test_load_maps_the_options_json_structure(monkeypatch, tmp_path):
     assert settings.auto_eco_outside_temp_threshold == 14.5
     assert settings.auto_eco_inside_temp_diff == 2.0
     assert settings.interval == 300
+
+
+def test_load_treats_an_empty_weather_entity_as_not_configured(monkeypatch, tmp_path):
+    options = {
+        "evohome": {"location_name": "MyHome", "username": "u", "password": "p", "off_temp_threshold": 5.0, "away_mode": "eco"},
+        "presence": {"entities": [], "last_home_grace_time": 1200, "heating_schedule_grace_time": 1800},
+        "auto_eco": {"enabled": False, "weather_entity": "", "outside_temp_threshold": 14.5, "inside_temp_diff": 2.0},
+        "interval": 300,
+    }
+    monkeypatch.setattr(settings_module, "_OPTIONS_PATH", _write_options(tmp_path, options))
+    monkeypatch.setenv("SUPERVISOR_TOKEN", "supervisor-token")
+
+    assert Settings.load().homeassistant_auto_eco_weather_entity is None
+
+
+@pytest.mark.parametrize("interval", [0, -5])
+def test_non_positive_interval_is_rejected(interval):
+    from conftest import make_settings
+
+    with pytest.raises(ValueError):
+        make_settings(interval=interval)

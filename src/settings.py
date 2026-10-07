@@ -26,6 +26,11 @@ class Settings:
     auto_eco_inside_temp_diff: float
     interval: float
 
+    def __post_init__(self) -> None:
+        # fail fast at startup: a non-positive interval would hammer the vendor API in a tight loop
+        if self.interval <= 0:
+            raise ValueError(f"invalid interval {self.interval!r}; must be positive")
+
     @classmethod
     def load(cls) -> "Settings":
         # read the add-on configuration from Home Assistant; called once at startup so
@@ -43,7 +48,8 @@ class Settings:
             homeassistant_url="http://supervisor/core",
             homeassistant_token=os.environ["SUPERVISOR_TOKEN"],
             homeassistant_presence_entities=config["presence"]["entities"],
-            homeassistant_auto_eco_weather_entity=config["auto_eco"]["weather_entity"],
+            # an empty entity id means "not configured", not an entity
+            homeassistant_auto_eco_weather_entity=config["auto_eco"]["weather_entity"] or None,
             presence_last_home_grace_time=config["presence"]["last_home_grace_time"],
             presence_heating_schedule_grace_time=config["presence"]["heating_schedule_grace_time"],
             auto_eco_enabled=config["auto_eco"]["enabled"],
