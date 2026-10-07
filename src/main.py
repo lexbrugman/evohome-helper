@@ -64,8 +64,8 @@ class Application:
                 logger.warning("presence could not be determined; leaving the thermostat unchanged")
                 return
 
-            if self._presence.is_in_away_grace_period() and self._controller.is_in_schedule_grace_period(location):
-                logger.info("in grace period of schedule start time")
+            if self._presence.was_someone_home_recently() and self._controller.is_in_preheat_window(location):
+                logger.info("pre-heating after a scheduled setpoint increase; the home is in daily use")
                 await self._controller.set_normal(location)
             else:
                 await self._controller.set_away(location)

@@ -83,7 +83,6 @@ async def test_set_mode_updates_control_system_when_allowed(controller_factory, 
     "auto_eco_enabled,schedule_setpoint,outside_temp,expected",
     [
         (False, 20, 30, True),
-        (True, 5, 30, True),
         (True, 20, None, True),
         (True, 20, 13, True),
         (True, 20, 20, False),
@@ -138,29 +137,47 @@ def test_get_highest_set_point_temp_takes_max_across_zones(controller_factory, e
         assert controller_factory()._get_highest_set_point_temp(location) == 21.0
 
 
-def test_is_in_schedule_grace_period(controller_factory, evohome_factory, settings):
+def test_is_in_preheat_window(controller_factory, evohome_factory, settings):
+    state = evohome_factory.complete_state(schedule=evohome_factory.preheat_schedule(20, "11:55:00"))
+    controller = controller_factory(config=replace(settings, presence_heating_schedule_grace_time=900))
+
+    with freeze_time("2024-04-07 12:00:00"):
+        assert controller.is_in_preheat_window(state.location) is True
+
+
+def test_is_in_preheat_window_false_outside_window(controller_factory, evohome_factory, settings):
+    state = evohome_factory.complete_state(schedule=evohome_factory.preheat_schedule(20, "06:00:00"))
+    controller = controller_factory(config=replace(settings, presence_heating_schedule_grace_time=900))
+
+    with freeze_time("2024-04-07 12:00:00"):
+        assert controller.is_in_preheat_window(state.location) is False
+
+
+def test_is_in_preheat_window_false_for_a_flat_schedule(controller_factory, evohome_factory, settings):
+    # a single setpoint all week never increases, so it never expects anyone
     state = evohome_factory.complete_state(schedule=evohome_factory.uniform_schedule(20, "11:55:00"))
     controller = controller_factory(config=replace(settings, presence_heating_schedule_grace_time=900))
 
     with freeze_time("2024-04-07 12:00:00"):
-        assert controller.is_in_schedule_grace_period(state.location) is True
+        assert controller.is_in_preheat_window(state.location) is False
 
 
-def test_is_in_schedule_grace_period_false_outside_window(controller_factory, evohome_factory, settings):
-    state = evohome_factory.complete_state(schedule=evohome_factory.uniform_schedule(20, "06:00:00"))
-    controller = controller_factory(config=replace(settings, presence_heating_schedule_grace_time=900))
+def test_is_in_preheat_window_ignores_setpoint_decreases(controller_factory, evohome_factory, settings):
+    """A typical day: up at 07:00, down while out at 09:00, up for coming home at 17:00,
+    down for the night at 23:00. Only the increases open a pre-heat window."""
+    state = evohome_factory.complete_state(
+        schedule=evohome_factory.daily_schedule(("07:00:00", 21), ("09:00:00", 18), ("17:00:00", 21), ("23:00:00", 15)),
+    )
+    controller = controller_factory(config=replace(settings, presence_heating_schedule_grace_time=1800))
 
-    with freeze_time("2024-04-07 12:00:00"):
-        assert controller.is_in_schedule_grace_period(state.location) is False
-
-
-def test_is_in_schedule_grace_period_skips_off_zones(controller_factory, evohome_factory, settings):
-    # setpoint at or below the off threshold (5) should be skipped
-    state = evohome_factory.complete_state(schedule=evohome_factory.uniform_schedule(5, "11:55:00"))
-    controller = controller_factory(config=replace(settings, presence_heating_schedule_grace_time=900, evohome_off_temp_threshold=5))
-
-    with freeze_time("2024-04-07 12:00:00"):
-        assert controller.is_in_schedule_grace_period(state.location) is False
+    with freeze_time("2024-04-10 07:10:00"):
+        assert controller.is_in_preheat_window(state.location) is True
+    with freeze_time("2024-04-10 09:10:00"):  # the step down to 18 must not heat an empty house
+        assert controller.is_in_preheat_window(state.location) is False
+    with freeze_time("2024-04-10 17:10:00"):
+        assert controller.is_in_preheat_window(state.location) is True
+    with freeze_time("2024-04-10 23:10:00"):
+        assert controller.is_in_preheat_window(state.location) is False
 
 
 def test_get_zone_switch_points_flattens_and_sorts(evohome_factory):
@@ -221,46 +238,38 @@ async def test_is_normal_heating_needed_when_no_valid_active_setpoint(controller
         assert await controller._is_normal_heating_needed(state.location) is True
 
 
-def test_current_zone_switch_point_ignores_off_period(controller_factory, evohome_factory):
-    """When the current scheduled period is off, return the last heating switchpoint."""
-    sp_heat = evohome_factory.switchpoint("11:55:00", 20)
-    sp_off = evohome_factory.switchpoint("12:05:00", 5)
-    daily = [evohome_factory.day_schedule(d, [sp_heat, sp_off]) for d in range(7)]
-    state = evohome_factory.complete_state(schedule=daily)
+def test_get_last_setpoint_increase_survives_a_following_decrease(evohome_factory):
+    """Inside a setback that started minutes ago, the last increase is still the one before it."""
+    state = evohome_factory.complete_state(schedule=evohome_factory.daily_schedule(("11:55:00", 20), ("12:05:00", 5)))
 
-    now = datetime(2024, 4, 7, 12, 10, 0)  # Sunday, inside the "off" window
-    sp_start, sp_temp = controller_factory()._get_last_heating_switchpoint(state.zone, now)
-
-    assert sp_temp == 20.0
-    assert sp_start == datetime(2024, 4, 7, 11, 55, 0)
+    now = datetime(2024, 4, 7, 12, 10, 0)  # Sunday, inside the setback
+    assert evohome._get_last_setpoint_increase(state.zone, now) == (datetime(2024, 4, 7, 11, 55, 0), 20.0)
 
 
-def test_get_last_heating_switchpoint_returns_none_when_zone_always_off(controller_factory, evohome_factory, settings):
+def test_get_last_setpoint_increase_wraps_around_the_week(evohome_factory):
+    """The earliest switch point of the window is compared with the latest one."""
+    # Monday-only heating: Sunday's setback precedes Monday's increase a week later
+    monday = evohome_factory.day_schedule(0, [evohome_factory.switchpoint("07:00:00", 21)])
+    others = [evohome_factory.day_schedule(d, [evohome_factory.switchpoint("07:00:00", 15)]) for d in range(1, 7)]
+    state = evohome_factory.complete_state(schedule=[monday, *others])
+
+    now = datetime(2024, 4, 8, 7, 10, 0)  # Monday 2024-04-08
+    assert evohome._get_last_setpoint_increase(state.zone, now) == (datetime(2024, 4, 8, 7, 0, 0), 21.0)
+
+
+def test_get_last_setpoint_increase_returns_none_for_a_flat_schedule(evohome_factory):
     state = evohome_factory.complete_state(schedule=evohome_factory.uniform_schedule(15, "11:55:00"))
-    controller = controller_factory(config=replace(settings, evohome_off_temp_threshold=15))
 
     now = datetime(2024, 4, 7, 12, 10, 0)
-    assert controller._get_last_heating_switchpoint(state.zone, now) is None
+    assert evohome._get_last_setpoint_increase(state.zone, now) is None
 
 
-def test_is_in_schedule_grace_period_triggered_after_off_within_grace(controller_factory, evohome_factory, settings):
-    """Grace period uses last heating start even if current period is off."""
-    sp_heat = evohome_factory.switchpoint("11:55:00", 20)
-    sp_off = evohome_factory.switchpoint("12:05:00", 5)
-    daily = [evohome_factory.day_schedule(d, [sp_heat, sp_off]) for d in range(7)]
-    state = evohome_factory.complete_state(schedule=daily)
-    controller = controller_factory(config=replace(settings, presence_heating_schedule_grace_time=900, evohome_off_temp_threshold=5))
+def test_is_in_preheat_window_stays_open_through_a_following_decrease(controller_factory, evohome_factory, settings):
+    state = evohome_factory.complete_state(schedule=evohome_factory.daily_schedule(("11:55:00", 20), ("12:05:00", 5)))
+    controller = controller_factory(config=replace(settings, presence_heating_schedule_grace_time=900))
 
-    with freeze_time("2024-04-07 12:09:00"):  # 14 minutes after heat started, within 15-min grace
-        assert controller.is_in_schedule_grace_period(state.location) is True
-
-
-def test_is_in_schedule_grace_period_false_when_zone_always_off(controller_factory, evohome_factory, settings):
-    state = evohome_factory.complete_state(schedule=evohome_factory.uniform_schedule(15, "11:55:00"))
-    controller = controller_factory(config=replace(settings, presence_heating_schedule_grace_time=900, evohome_off_temp_threshold=15))
-
-    with freeze_time("2024-04-07 12:00:00"):
-        assert controller.is_in_schedule_grace_period(state.location) is False
+    with freeze_time("2024-04-07 12:09:00"):  # 14 minutes after the increase, within the 15-min window
+        assert controller.is_in_preheat_window(state.location) is True
 
 
 def test_get_zones_filters_zones_with_unusable_data(controller_factory, evohome_factory):

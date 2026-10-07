@@ -21,7 +21,6 @@ def test_load_maps_the_options_json_structure(monkeypatch, tmp_path):
             "location_name": "MyHome",
             "username": "user@example.org",
             "password": "secret",
-            "off_temp_threshold": 5.0,
             "away_mode": "eco",
         },
         "presence": {
@@ -45,7 +44,6 @@ def test_load_maps_the_options_json_structure(monkeypatch, tmp_path):
     assert settings.evohome_location_name == "MyHome"
     assert settings.evohome_username == "user@example.org"
     assert settings.evohome_password == "secret"
-    assert settings.evohome_off_temp_threshold == 5.0
     assert settings.evohome_away_mode == "eco"
     assert settings.evohome_token_cache_path == "/data/evohome_token_cache.json"
     assert settings.homeassistant_url == "http://supervisor/core"
@@ -62,7 +60,7 @@ def test_load_maps_the_options_json_structure(monkeypatch, tmp_path):
 
 def test_load_treats_an_empty_weather_entity_as_not_configured(monkeypatch, tmp_path):
     options = {
-        "evohome": {"location_name": "MyHome", "username": "u", "password": "p", "off_temp_threshold": 5.0, "away_mode": "eco"},
+        "evohome": {"location_name": "MyHome", "username": "u", "password": "p", "away_mode": "eco"},
         "presence": {"entities": [], "last_home_grace_time": 1200, "heating_schedule_grace_time": 1800},
         "auto_eco": {"enabled": False, "weather_entity": "", "outside_temp_threshold": 14.5, "inside_temp_diff": 2.0},
         "interval": 300,

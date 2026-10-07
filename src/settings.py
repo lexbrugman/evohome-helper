@@ -12,7 +12,6 @@ class Settings:
     evohome_location_name: str
     evohome_username: str
     evohome_password: str
-    evohome_off_temp_threshold: float
     evohome_away_mode: str
     evohome_token_cache_path: str
     homeassistant_url: str
@@ -42,7 +41,6 @@ class Settings:
             evohome_location_name=config["evohome"]["location_name"],
             evohome_username=config["evohome"]["username"],
             evohome_password=config["evohome"]["password"],
-            evohome_off_temp_threshold=config["evohome"]["off_temp_threshold"],
             evohome_away_mode=config["evohome"]["away_mode"],
             evohome_token_cache_path="/data/evohome_token_cache.json",
             homeassistant_url="http://supervisor/core",

@@ -60,9 +60,11 @@ class PresenceTracker:
     def is_someone_home(self) -> bool:
         return any(home.present for home in self._home_records())
 
-    def is_in_away_grace_period(self) -> bool:
-        # only meaningful when no one is home; computed at query time so that a reading
-        # that cannot be refreshed ages out of the grace window instead of staying in it
+    def was_someone_home_recently(self) -> bool:
+        """Whether anyone left home within the configured window: a home in daily use
+        gets pre-heated for the schedule, a home empty for days (holiday) does not."""
+        # computed at query time so that a reading that cannot be refreshed ages out of
+        # the window instead of staying in it
         now = datetime.now(UTC)
         return any(
             home.left_at is not None and (now - home.left_at).total_seconds() <= self._settings.presence_last_home_grace_time

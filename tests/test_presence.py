@@ -1,10 +1,20 @@
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
+from conftest import make_settings
 from freezegun import freeze_time
 
 from evohome_helper.presence import PresenceTracker, ZonePresence
 
 NOW = datetime(2024, 4, 10, 8, 0, 0, tzinfo=UTC)
+
+
+@pytest.fixture
+def settings():
+    # these tests exercise the window mechanics with a short window; the shipped default
+    # (a day) tells daily use from holiday
+    return make_settings(presence_last_home_grace_time=1200)
 
 
 def _ago(seconds):
@@ -68,7 +78,7 @@ async def test_moving_between_other_zones_does_not_count_as_leaving_home(fake_ho
 
     assert _home(tracker, "person.a").left_at == _ago(2000)
     with freeze_time(NOW):
-        assert tracker.is_in_away_grace_period() is False
+        assert tracker.was_someone_home_recently() is False
 
 
 async def test_request_failure_keeps_the_last_reading(fake_homeassistant, settings):
@@ -90,7 +100,7 @@ async def test_nothing_is_known_before_a_successful_reading(fake_homeassistant, 
 
     assert tracker.is_presence_known() is False
     assert tracker.is_someone_home() is False
-    assert tracker.is_in_away_grace_period() is False
+    assert tracker.was_someone_home_recently() is False
 
 
 async def test_unavailable_entity_is_not_a_reading(fake_homeassistant, settings):
@@ -125,7 +135,7 @@ async def test_unavailable_entity_keeps_last_known_presence(fake_homeassistant, 
 
 
 @freeze_time(NOW)
-async def test_is_someone_home_and_away_grace_period(fake_homeassistant, settings):
+async def test_is_someone_home_and_was_someone_home_recently(fake_homeassistant, settings):
     fake_homeassistant.set_state("person.a", _state("not_home", seconds_ago=100))
     fake_homeassistant.set_state("person.b", _state("home", seconds_ago=9999))
     tracker = PresenceTracker(fake_homeassistant, settings)
@@ -133,40 +143,40 @@ async def test_is_someone_home_and_away_grace_period(fake_homeassistant, setting
     await tracker.refresh()
 
     assert tracker.is_someone_home() is True
-    assert tracker.is_in_away_grace_period() is True
+    assert tracker.was_someone_home_recently() is True
 
 
 @freeze_time(NOW)
-async def test_is_in_away_grace_period_false_when_all_expired(fake_homeassistant, settings):
+async def test_was_someone_home_recently_false_when_all_left_long_ago(fake_homeassistant, settings):
     fake_homeassistant.set_state("person.a", _state("not_home", seconds_ago=9999))
     fake_homeassistant.set_state("person.b", _state("Work", seconds_ago=1201))
     tracker = PresenceTracker(fake_homeassistant, settings)
 
     await tracker.refresh()
 
-    assert tracker.is_in_away_grace_period() is False
+    assert tracker.was_someone_home_recently() is False
 
 
 @freeze_time(NOW)
-async def test_is_in_away_grace_period_true_at_boundary(fake_homeassistant, settings):
+async def test_was_someone_home_recently_true_at_boundary(fake_homeassistant, settings):
     fake_homeassistant.set_state("person.a", _state("not_home", seconds_ago=1200))
     fake_homeassistant.set_state("person.b", _state("not_home", seconds_ago=9999))
     tracker = PresenceTracker(fake_homeassistant, settings)
 
     await tracker.refresh()
 
-    assert tracker.is_in_away_grace_period() is True
+    assert tracker.was_someone_home_recently() is True
 
 
 @freeze_time(NOW)
-async def test_unusable_last_changed_does_not_count_toward_grace(fake_homeassistant, settings):
+async def test_unusable_last_changed_does_not_count_as_recent(fake_homeassistant, settings):
     fake_homeassistant.set_state("person.a", _state("not_home", last_changed="garbage"))
     fake_homeassistant.set_state("person.b", {"state": "not_home", "attributes": {}})
     tracker = PresenceTracker(fake_homeassistant, settings)
 
     await tracker.refresh()
 
-    assert tracker.is_in_away_grace_period() is False
+    assert tracker.was_someone_home_recently() is False
     # the entities are still valid presence readings
     assert tracker.is_presence_known() is True
 
@@ -187,19 +197,19 @@ async def test_unusable_last_changed_is_backfilled_by_the_next_reading(fake_home
     assert _home(tracker, "person.a").left_at == _ago(100)
 
 
-async def test_stale_reading_ages_out_of_grace_period(fake_homeassistant, settings):
-    """A reading that cannot be refreshed must not stay 'in grace' for as long as HA is unreachable."""
+async def test_stale_reading_ages_out_of_the_window(fake_homeassistant, settings):
+    """A reading that cannot be refreshed must not count as recent for as long as HA is unreachable."""
     tracker = PresenceTracker(fake_homeassistant, settings)
     fake_homeassistant.set_state("person.a", _state("not_home", seconds_ago=100))
     fake_homeassistant.set_state("person.b", _state("not_home", seconds_ago=9999))
 
     with freeze_time(NOW):
         await tracker.refresh()
-        assert tracker.is_in_away_grace_period() is True
+        assert tracker.was_someone_home_recently() is True
 
     fake_homeassistant.set_state("person.a", None)  # HA goes down
     fake_homeassistant.set_state("person.b", None)
 
     with freeze_time(NOW + timedelta(seconds=1200)):
         await tracker.refresh()
-        assert tracker.is_in_away_grace_period() is False
+        assert tracker.was_someone_home_recently() is False

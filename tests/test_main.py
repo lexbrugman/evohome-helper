@@ -18,17 +18,17 @@ from evohome_helper.evohome_client import LocationNotFound
 from evohome_helper.evohome import EvohomeController
 
 
-def _grace_schedule(evohome_factory, *, in_grace):
-    if in_grace:
-        return evohome_factory.uniform_schedule(20, "07:55:00")
-    return evohome_factory.uniform_schedule(20, "06:00:00")
+def _preheat_schedule(evohome_factory, *, in_window):
+    if in_window:
+        return evohome_factory.preheat_schedule(20, "07:55:00")
+    return evohome_factory.preheat_schedule(20, "06:00:00")
 
 
-def _fake_presence(*, someone_home=False, away_grace=False, known=True):
+def _fake_presence(*, someone_home=False, recently_home=False, known=True):
     presence = Mock()
     presence.refresh = AsyncMock()
     presence.is_someone_home = Mock(return_value=someone_home)
-    presence.is_in_away_grace_period = Mock(return_value=away_grace)
+    presence.was_someone_home_recently = Mock(return_value=recently_home)
     presence.is_presence_known = Mock(return_value=known)
     return presence
 
@@ -43,12 +43,12 @@ def _build_app(settings, service, presence):
 
 
 @pytest.mark.parametrize(
-    "someone_home,away_grace_active,schedule_grace_active,start_mode,expected_mode,clock",
+    "someone_home,recently_home,preheat_window,start_mode,expected_mode,clock",
     [
         (True, True, False, SystemMode.AUTO_WITH_ECO, SystemMode.AUTO, "2024-04-10 08:00:00"),
         (False, True, True, SystemMode.AUTO_WITH_ECO, SystemMode.AUTO, "2024-04-07 08:00:00"),
         (False, False, False, SystemMode.AUTO, SystemMode.AWAY, "2024-04-10 08:00:00"),
-        # exactly one grace active must still mean away: both conjuncts are load-bearing
+        # exactly one condition active must still mean away: both conjuncts are load-bearing
         (False, True, False, SystemMode.AUTO, SystemMode.AWAY, "2024-04-10 08:00:00"),
         (False, False, True, SystemMode.AUTO, SystemMode.AWAY, "2024-04-07 08:00:00"),
     ],
@@ -58,15 +58,15 @@ async def test_set_thermostat_mode_public_scenarios(
     evohome_factory,
     settings,
     someone_home,
-    away_grace_active,
-    schedule_grace_active,
+    recently_home,
+    preheat_window,
     start_mode,
     expected_mode,
     clock,
 ):
-    state = evohome_factory.complete_state(system_mode=start_mode, schedule=_grace_schedule(evohome_factory, in_grace=schedule_grace_active))
+    state = evohome_factory.complete_state(system_mode=start_mode, schedule=_preheat_schedule(evohome_factory, in_window=preheat_window))
     service = make_service(locations=[state.location])
-    presence = _fake_presence(someone_home=someone_home, away_grace=away_grace_active, known=True)
+    presence = _fake_presence(someone_home=someone_home, recently_home=recently_home, known=True)
     app = _build_app(settings, service, presence)
 
     with freeze_time(clock):
@@ -78,13 +78,13 @@ async def test_set_thermostat_mode_public_scenarios(
 
 
 async def test_set_thermostat_mode_multiple_zones_keeps_normal(make_service, evohome_factory, settings):
-    early_zone = evohome_factory.zone(name="Hall", schedule=evohome_factory.uniform_schedule(19, "06:00:00"))
-    grace_zone = evohome_factory.zone(name="Living", schedule=evohome_factory.uniform_schedule(21, "07:55:00"))
+    early_zone = evohome_factory.zone(name="Hall", schedule=evohome_factory.preheat_schedule(19, "06:00:00"))
+    preheat_zone = evohome_factory.zone(name="Living", schedule=evohome_factory.preheat_schedule(21, "07:55:00"))
 
-    control_system = evohome_factory.control_system(mode=SystemMode.AUTO_WITH_ECO, zones=[early_zone, grace_zone])
+    control_system = evohome_factory.control_system(mode=SystemMode.AUTO_WITH_ECO, zones=[early_zone, preheat_zone])
     location = evohome_factory.location(control_systems=[control_system])
     service = make_service(locations=[location])
-    presence = _fake_presence(someone_home=False, away_grace=True, known=True)
+    presence = _fake_presence(someone_home=False, recently_home=True, known=True)
     app = _build_app(settings, service, presence)
 
     with freeze_time("2024-04-07 08:00:00"):

@@ -26,7 +26,7 @@ _WEEKDAY_INDEX = {day.value: index for index, day in enumerate(DayOfWeek)}
 
 # faults that make a zone's readings and schedule unusable; benign faults (e.g. a low
 # battery) leave the zone heating normally, so it must keep counting toward the
-# setpoint and grace-period calculations
+# setpoint and pre-heat window calculations
 _DATA_UNUSABLE_FAULTS = {
     FaultType.GWY_X_CL,  # GatewayCommunicationLost
     FaultType.ZON_A_CL,  # TempZoneActuatorCommunicationLost
@@ -81,6 +81,19 @@ def _get_active_setpoint(zone: Zone, now: datetime) -> float | None:
     return switch_points[-1][1]
 
 
+def _get_last_setpoint_increase(zone: Zone, now: datetime) -> tuple[datetime, float] | None:
+    # a scheduled setpoint increase is where the schedule expects people (waking up,
+    # coming home); decreases (setbacks) are not, whatever the temperatures involved
+    switch_points = _get_zone_switch_points(zone, now)
+    last_increase = None
+    for index, (switchpoint_datetime, temperature) in enumerate(switch_points):
+        # the week is cyclic, so the earliest switch point follows the latest one
+        _, previous_temperature = switch_points[index - 1]
+        if temperature > previous_temperature:
+            last_increase = (switchpoint_datetime, temperature)
+    return last_increase
+
+
 class EvohomeController:
     def __init__(self, evohome_service: EvohomeService, weather: WeatherService, settings: Settings):
         self._evohome = evohome_service
@@ -96,25 +109,27 @@ class EvohomeController:
         for control_system in get_control_systems(location):
             yield from _usable_zones(control_system)
 
-    def is_in_schedule_grace_period(self, location: Location) -> bool:
+    def is_in_preheat_window(self, location: Location) -> bool:
+        """Whether any zone's schedule raised its setpoint recently: the house is then kept
+        heating for a while even if no one is detected yet, so it is warm on arrival."""
         now = get_current_time(location)
 
         for zone in self.get_zones(location):
-            switch_point = self._get_last_heating_switchpoint(zone, now)
-            if switch_point is None:
-                logger.debug("no scheduled heating switch point found for %s", zone.name)
+            increase = _get_last_setpoint_increase(zone, now)
+            if increase is None:
+                logger.debug("no scheduled setpoint increase found for %s", zone.name)
                 continue
 
-            switch_point_start, switch_point_temperature = switch_point
+            increase_start, increase_temperature = increase
             logger.debug(
-                "last scheduled switch point for %s was at: %s (%s degrees celsius)",
+                "last scheduled setpoint increase for %s was at: %s (%s degrees celsius)",
                 zone.name,
-                switch_point_start,
-                switch_point_temperature,
+                increase_start,
+                increase_temperature,
             )
 
-            since_switch_point = now - switch_point_start
-            if since_switch_point.total_seconds() < self._settings.presence_heating_schedule_grace_time:
+            since_increase = now - increase_start
+            if since_increase.total_seconds() < self._settings.presence_heating_schedule_grace_time:
                 return True
 
         return False
@@ -127,22 +142,6 @@ class EvohomeController:
 
     async def set_away(self, location: Location) -> None:
         await self._set_mode(self._get_desired_away_mode(), location)
-
-    def _get_last_heating_switchpoint(self, zone: Zone, now: datetime) -> tuple[datetime, float] | None:
-        last_heating_datetime = None
-        last_heating_temperature = None
-        for switchpoint_datetime, switchpoint_temperature in _get_zone_switch_points(zone, now):
-            if not self._is_considered_off(switchpoint_temperature):
-                last_heating_datetime = switchpoint_datetime
-                last_heating_temperature = switchpoint_temperature
-
-        if last_heating_datetime is None or last_heating_temperature is None:
-            return None
-
-        return last_heating_datetime, last_heating_temperature
-
-    def _is_considered_off(self, temperature: float) -> bool:
-        return temperature <= self._settings.evohome_off_temp_threshold
 
     def _get_desired_away_mode(self) -> SystemMode:
         return _AWAY_MODE_MAP[self._settings.evohome_away_mode]
@@ -164,8 +163,8 @@ class EvohomeController:
 
         highest_set_point_temp = self._get_highest_set_point_temp(location)
 
-        # no valid active setpoint, or all zones are off?
-        if highest_set_point_temp is None or self._is_considered_off(highest_set_point_temp):
+        # no valid active setpoint?
+        if highest_set_point_temp is None:
             return True
 
         # can we fetch a valid temperature?

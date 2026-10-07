@@ -36,14 +36,13 @@ def make_settings(**overrides) -> Settings:
         evohome_location_name="Home",
         evohome_username="user",
         evohome_password="pass",
-        evohome_off_temp_threshold=5,
         evohome_away_mode="away",
         evohome_token_cache_path="/nonexistent/evohome_token_cache.json",
         homeassistant_url="http://ha.local",
         homeassistant_token="token",
         homeassistant_presence_entities=["person.a", "person.b"],
         homeassistant_auto_eco_weather_entity="weather.home",
-        presence_last_home_grace_time=1200,
+        presence_last_home_grace_time=86400,
         presence_heating_schedule_grace_time=1800,
         auto_eco_enabled=True,
         auto_eco_outside_temp_threshold=14,
@@ -72,8 +71,20 @@ def _make_day_schedule(day_of_week_int, switchpoints):
 
 
 def _uniform_schedule(setpoint=20.0, time_of_day="07:00:00"):
+    # a flat schedule: the same single setpoint every day, so it never increases
     sp = _make_switchpoint(time_of_day, setpoint)
     return [_make_day_schedule(d, [sp]) for d in range(7)]
+
+
+def _daily_schedule(*switchpoints):
+    # the same (time_of_day, setpoint) switch points every day
+    sps = [_make_switchpoint(time_of_day, setpoint) for time_of_day, setpoint in switchpoints]
+    return [_make_day_schedule(d, sps) for d in range(7)]
+
+
+def _preheat_schedule(setpoint=20.0, time_of_day="07:00:00"):
+    # heating from time_of_day, a night setback from 23:00: the morning switch point is an increase
+    return _daily_schedule((time_of_day, setpoint), ("23:00:00", 15.0))
 
 
 def _make_fault(fault_type=FaultType.ZON_S_CL):
@@ -193,6 +204,14 @@ class EvohomeFactory:
     @staticmethod
     def uniform_schedule(setpoint=20.0, time_of_day="07:00:00"):
         return _uniform_schedule(setpoint, time_of_day)
+
+    @staticmethod
+    def daily_schedule(*switchpoints):
+        return _daily_schedule(*switchpoints)
+
+    @staticmethod
+    def preheat_schedule(setpoint=20.0, time_of_day="07:00:00"):
+        return _preheat_schedule(setpoint, time_of_day)
 
     @staticmethod
     def complete_state(*, location_name="Home", zone_mode=ZoneMode.FOLLOW_SCHEDULE, system_mode=SystemMode.AUTO, with_fault=False, setpoint=21, schedule=None):
