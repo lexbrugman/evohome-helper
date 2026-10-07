@@ -8,7 +8,7 @@ import signal
 from logging import config as log_config
 
 from evohome_helper.evohome import EvohomeController
-from evohome_helper.evohome_client import EvohomeService
+from evohome_helper.evohome_client import EvohomeService, LocationNotFound, is_transient_error
 from evohome_helper.homeassistant import HomeAssistantClient
 from evohome_helper.presence import PresenceTracker
 from evohome_helper.weather import WeatherService
@@ -36,6 +36,7 @@ class Application:
         self._homeassistant = homeassistant
 
     async def determine_and_set_thermostat_mode(self) -> None:
+        await self._presence.refresh()
         location = await self._evohome_service.get_location()
 
         for zone in self._controller.get_zones(location):
@@ -52,7 +53,7 @@ class Application:
                 setpoint_status["setpoint_mode"],
             )
 
-        if await self._presence.is_someone_home():
+        if self._presence.is_someone_home():
             logger.info("someone is home")
             await self._controller.set_normal(location)
 
@@ -63,7 +64,7 @@ class Application:
                 logger.warning("presence could not be determined; leaving the thermostat unchanged")
                 return
 
-            if await self._presence.is_in_away_grace_period() and self._controller.is_in_schedule_grace_period(location):
+            if self._presence.is_in_away_grace_period() and self._controller.is_in_schedule_grace_period(location):
                 logger.info("in grace period of schedule start time")
                 await self._controller.set_normal(location)
             else:
@@ -83,9 +84,20 @@ class Application:
                 try:
                     await self.determine_and_set_thermostat_mode()
                     consecutive_failures = 0
-                except Exception:
-                    consecutive_failures += 1
+                except LocationNotFound as error:
+                    # a misconfigured location name can never recover on its own; exit so
+                    # the problem is visible instead of retrying forever
+                    logger.critical("%s; exiting", error)
+                    raise
+                except Exception as error:
                     logger.exception("error in loop")
+
+                    # only failures that recreating the evohome client can plausibly cure (a
+                    # wedged session, a token the library failed to refresh) count toward a
+                    # reset; permanent errors, rate limiting and bugs would just churn the
+                    # heavily rate-limited vendor API with pointless re-authentications
+                    if is_transient_error(error):
+                        consecutive_failures += 1
 
                     if consecutive_failures >= CONSECUTIVE_FAILURES_BEFORE_RESET:
                         logger.warning("resetting the evohome client after %d consecutive failures", consecutive_failures)

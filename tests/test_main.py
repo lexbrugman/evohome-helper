@@ -9,8 +9,11 @@ from freezegun import freeze_time
 from unittest.mock import AsyncMock, Mock
 
 from evohomeasync2 import SystemMode
+from evohomeasync2.exceptions import ApiCallFailedError, InvalidSystemModeError
 
 import main
+
+from evohome_helper.evohome_client import LocationNotFound
 
 from evohome_helper.evohome import EvohomeController
 
@@ -23,8 +26,9 @@ def _grace_schedule(evohome_factory, *, in_grace):
 
 def _fake_presence(*, someone_home=False, away_grace=False, known=True):
     presence = Mock()
-    presence.is_someone_home = AsyncMock(return_value=someone_home)
-    presence.is_in_away_grace_period = AsyncMock(return_value=away_grace)
+    presence.refresh = AsyncMock()
+    presence.is_someone_home = Mock(return_value=someone_home)
+    presence.is_in_away_grace_period = Mock(return_value=away_grace)
     presence.is_presence_known = Mock(return_value=known)
     return presence
 
@@ -68,6 +72,7 @@ async def test_set_thermostat_mode_public_scenarios(
     with freeze_time(clock):
         await app.determine_and_set_thermostat_mode()
 
+    presence.refresh.assert_awaited_once()
     state.control_system.set_mode.assert_awaited_once_with(expected_mode)
     assert state.control_system.mode == expected_mode
 
@@ -144,7 +149,8 @@ async def test_run_resets_only_after_consecutive_failures(settings):
     so exactly one reset fires, and only after the three consecutive failures."""
     app = _minimal_app(settings, interval=0.01)
     log = []
-    outcomes = [Exception("boom"), Exception("boom"), None, Exception("boom"), Exception("boom"), Exception("boom")]
+    boom = ApiCallFailedError("boom")
+    outcomes = [boom, boom, None, boom, boom, boom]
 
     async def scripted():
         if not outcomes:  # script exhausted: stop the loop
@@ -163,9 +169,49 @@ async def test_run_resets_only_after_consecutive_failures(settings):
     assert log == ["cycle"] * 6 + ["reset"]
 
 
+@pytest.mark.parametrize(
+    "error",
+    [
+        ValueError("bug"),  # a bug or bad Home Assistant data
+        InvalidSystemModeError("unsupported system_mode"),  # permanent: fails identically every time
+        ApiCallFailedError("rate limited", status=429),  # re-authenticating deepens the throttle
+    ],
+)
+async def test_run_does_not_reset_on_errors_a_reset_cannot_cure(settings, error):
+    """Only transient failures may churn the rate-limited vendor API with a re-authentication."""
+    app = _minimal_app(settings, interval=0.01)
+    outcomes = [error] * (main.CONSECUTIVE_FAILURES_BEFORE_RESET + 1)
+
+    async def scripted():
+        if not outcomes:
+            os.kill(os.getpid(), signal.SIGTERM)
+            return
+        raise outcomes.pop(0)
+
+    app.determine_and_set_thermostat_mode = scripted
+
+    await asyncio.wait_for(app.run(), timeout=5)
+
+    app._evohome_service.reset.assert_not_awaited()
+
+
+async def test_run_exits_when_the_location_does_not_exist(settings):
+    # a misconfigured location name can never recover on its own
+    app = _minimal_app(settings, interval=60)
+    app.determine_and_set_thermostat_mode = AsyncMock(side_effect=LocationNotFound("Nowhere"))
+
+    with pytest.raises(LocationNotFound):
+        await asyncio.wait_for(app.run(), timeout=2)
+
+    app._evohome_service.reset.assert_not_awaited()
+    # the finally block must still release both aiohttp sessions
+    app._homeassistant.close.assert_awaited_once()
+    app._evohome_service.close.assert_awaited_once()
+
+
 async def test_run_resets_evohome_client_after_repeated_failures(settings):
     app = _minimal_app(settings, interval=0.01)
-    app.determine_and_set_thermostat_mode = AsyncMock(side_effect=Exception("boom"))
+    app.determine_and_set_thermostat_mode = AsyncMock(side_effect=ApiCallFailedError("boom"))
 
     task = asyncio.create_task(app.run())
     async with asyncio.timeout(2):

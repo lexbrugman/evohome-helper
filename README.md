@@ -13,6 +13,10 @@ Depends on Home Assistant for presence and weather information.
 - Presence detection (switches to the configured mode when no-one is home)
 - Use eco mode with warm weather to save energy
 
+Presence is read from Home Assistant entities that report `home` when someone is home
+(`person.*` or `device_tracker.*`). The time the last person left is taken from the
+entity's state change time (`last_changed`).
+
 ## Install via Home Assistant
 
 1. In Home Assistant, go to **Settings → Apps → Install app**.

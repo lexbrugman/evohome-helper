@@ -33,7 +33,9 @@ _PERMANENT_ERRORS = (
 _HTTP_TOO_MANY_REQUESTS = 429
 
 
-def _is_retryable(exception: BaseException) -> bool:
+def is_transient_error(exception: BaseException) -> bool:
+    """Whether the error can resolve on its own, so that retrying (or, after repeated
+    failures, recreating the client) can plausibly help."""
     if isinstance(exception, _PERMANENT_ERRORS):
         return False
 
@@ -46,7 +48,7 @@ def _is_retryable(exception: BaseException) -> bool:
 
 
 _retry = retry(
-    retry=retry_if_exception(_is_retryable),
+    retry=retry_if_exception(is_transient_error),
     wait=wait_exponential(),
     stop=stop_after_attempt(6),
     reraise=True,
