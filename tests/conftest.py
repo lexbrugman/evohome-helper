@@ -92,13 +92,20 @@ class FakeZone:
         temperature_status=None,
         setpoint_status=None,
         schedule=None,
+        zone_id=None,
     ):
+        self.id = zone_id or f"zone-{name}"
         self.name = name
         self.active_faults = [] if active_faults is None else active_faults
         self.mode = mode
         self.temperature_status = {"is_available": True, "temperature": 19} if temperature_status is None else temperature_status
         self.setpoint_status = {"setpoint_mode": ZoneMode.FOLLOW_SCHEDULE, "target_heat_temperature": 21} if setpoint_status is None else setpoint_status
         self._schedule = _uniform_schedule() if schedule is None else schedule
+        # the real library raises InvalidScheduleError from get_schedule() for a zone without one
+        self.get_schedule = AsyncMock(side_effect=self._do_get_schedule)
+
+    async def _do_get_schedule(self):
+        return self.schedule
 
     @property
     def schedule(self):
@@ -118,7 +125,6 @@ class FakeControlSystem:
 
     def __post_init__(self):
         self.set_mode = AsyncMock(side_effect=self._do_set_mode)
-        self.get_schedules = AsyncMock()
 
     async def _do_set_mode(self, new_mode):
         if new_mode not in self.allowed_modes:

@@ -8,9 +8,9 @@ from datetime import datetime, timedelta
 
 import aiohttp
 
-from evohomeasync2 import ControlSystem, EvohomeClient, Location, SystemMode
+from evohomeasync2 import ControlSystem, EvohomeClient, Location, SystemMode, Zone
 from evohomeasync2.auth import AbstractTokenManager
-from evohomeasync2.exceptions import ApiCallFailedError, AuthenticationFailedError, BadApiSchemaError, BadUserCredentialsError
+from evohomeasync2.exceptions import ApiCallFailedError, AuthenticationFailedError, BadApiSchemaError, BadUserCredentialsError, InvalidScheduleError
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from settings import Settings
@@ -175,13 +175,7 @@ class EvohomeService:
         for location in client.locations:
             if location.name == location_name:
                 await self._update_location(location)
-                await asyncio.gather(
-                    *[
-                        self._fetch_schedules(system)
-                        for system in get_control_systems(location)
-                        if self._schedules_need_refresh(system)
-                    ],
-                )
+                await self._refresh_schedules(location)
                 return location
 
         raise LocationNotFound(location_name)
@@ -194,11 +188,28 @@ class EvohomeService:
     async def _update_location(self, location: Location) -> None:
         await location.update()
 
-    @_retry
-    async def _fetch_schedules(self, system: ControlSystem) -> None:
-        await system.get_schedules()
-        self._schedule_refresh_times[system.id] = datetime.now()
+    async def _refresh_schedules(self, location: Location) -> None:
+        # one request per zone, so a flaky zone is retried on its own instead of forcing
+        # every zone's schedule to be refetched; a controller has at most 12 zones, which
+        # bounds the burst
+        zones = [zone for system in get_control_systems(location) for zone in system.zones if self._schedule_needs_refresh(zone)]
+        results = await asyncio.gather(*(self._fetch_schedule(zone) for zone in zones), return_exceptions=True)
 
-    def _schedules_need_refresh(self, system: ControlSystem) -> bool:
-        last_refresh = self._schedule_refresh_times.get(system.id)
+        # every fetch has finished (none is left running detached), so now report the failure
+        errors = [result for result in results if isinstance(result, BaseException)]
+        if errors:
+            raise errors[0]
+
+    @_retry
+    async def _fetch_schedule(self, zone: Zone) -> None:
+        try:
+            await zone.get_schedule()
+        except InvalidScheduleError:
+            # a zone without a (valid) schedule; zone.schedule keeps raising, which the
+            # schedule calculations treat as having no switch points
+            pass
+        self._schedule_refresh_times[zone.id] = datetime.now()
+
+    def _schedule_needs_refresh(self, zone: Zone) -> bool:
+        last_refresh = self._schedule_refresh_times.get(zone.id)
         return last_refresh is None or datetime.now() - last_refresh >= _SCHEDULE_REFRESH_INTERVAL

@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock
 
 from evohomeasync2 import SystemMode
 from evohomeasync2.exceptions import ApiCallFailedError, AuthenticationFailedError, BadUserCredentialsError, InvalidSystemModeError
-from tenacity import wait_none
+from tenacity import stop_after_attempt, wait_none
 
 from evohome_helper import evohome_client
 from evohome_helper.evohome_client import EvohomeService
@@ -297,15 +297,44 @@ async def test_update_location_is_retried_on_transient_errors(monkeypatch, make_
     assert calls["count"] == 2
 
 
-async def test_fetch_schedules_is_retried_on_transient_errors(monkeypatch, make_service, evohome_factory):
-    monkeypatch.setattr(EvohomeService._fetch_schedules.retry, "wait", wait_none())
+async def test_fetch_schedule_is_retried_on_transient_errors(monkeypatch, make_service, evohome_factory):
+    monkeypatch.setattr(EvohomeService._fetch_schedule.retry, "wait", wait_none())
     state = evohome_factory.complete_state()
-    state.control_system.get_schedules.side_effect = [ApiCallFailedError("temporary failure", status=503), None]
+    state.zone.get_schedule.side_effect = [ApiCallFailedError("temporary failure", status=503), None]
     service = make_service(locations=[state.location])
 
     await service.get_location()
 
-    assert state.control_system.get_schedules.await_count == 2
+    assert state.zone.get_schedule.await_count == 2
+
+
+async def test_fetch_schedule_tolerates_a_zone_without_a_schedule(make_service, evohome_factory):
+    state = evohome_factory.complete_state(schedule=[])
+    service = make_service(locations=[state.location])
+
+    await service.get_location()
+
+    state.zone.get_schedule.assert_awaited_once()
+    assert state.zone.id in service._schedule_refresh_times  # not refetched every cycle
+
+
+async def test_refresh_schedules_fetches_every_zone_before_reporting_a_failure(monkeypatch, make_service, evohome_factory):
+    """A failing zone must neither abort nor leave detached the other zones' fetches, and
+    only the failing zone is due again next cycle."""
+    monkeypatch.setattr(EvohomeService._fetch_schedule.retry, "stop", stop_after_attempt(1))
+    broken = evohome_factory.zone(name="broken")
+    broken.get_schedule.side_effect = ApiCallFailedError("temporary failure", status=503)
+    fine = evohome_factory.zone(name="fine")
+    control_system = evohome_factory.control_system(zones=[broken, fine])
+    location = evohome_factory.location(control_systems=[control_system])
+    service = make_service(locations=[location])
+
+    with pytest.raises(ApiCallFailedError):
+        await service.get_location()
+
+    fine.get_schedule.assert_awaited_once()
+    assert fine.id in service._schedule_refresh_times
+    assert broken.id not in service._schedule_refresh_times
 
 
 async def test_retry_does_not_retry_unexpected_errors():
@@ -331,7 +360,7 @@ async def test_get_location_skips_recently_fetched_schedules(make_service, evoho
     await service.get_location()
     await service.get_location()
 
-    state.control_system.get_schedules.assert_awaited_once()
+    state.zone.get_schedule.assert_awaited_once()
 
 
 async def test_get_location_refetches_schedules_after_refresh_interval(make_service, evohome_factory):
@@ -339,10 +368,10 @@ async def test_get_location_refetches_schedules_after_refresh_interval(make_serv
     service = make_service(locations=[state.location])
 
     await service.get_location()
-    service._schedule_refresh_times[state.control_system.id] -= evohome_client._SCHEDULE_REFRESH_INTERVAL
+    service._schedule_refresh_times[state.zone.id] -= evohome_client._SCHEDULE_REFRESH_INTERVAL
     await service.get_location()
 
-    assert state.control_system.get_schedules.await_count == 2
+    assert state.zone.get_schedule.await_count == 2
 
 
 async def test_close_invalidates_schedule_cache(make_service, evohome_factory):
