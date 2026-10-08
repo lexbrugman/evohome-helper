@@ -10,7 +10,7 @@ _OPTIONS = {
     "evohome": {"location_name": "MyHome", "username": "u", "password": "p", "away_mode": "eco"},
     "presence": {"entities": [], "last_home_grace_time": 1200, "heating_schedule_grace_time": 1800},
     "auto_eco": {"enabled": False, "weather_entity": "", "outside_temp_threshold": 14.5, "inside_temp_diff": 2.0},
-    "interval": 300,
+    "interval": 180,
 }
 
 
@@ -41,7 +41,7 @@ def test_load_maps_the_options_json_structure(monkeypatch, tmp_path):
             "outside_temp_threshold": 14.5,
             "inside_temp_diff": 2.0,
         },
-        "interval": 300,
+        "interval": 180,
     }
     monkeypatch.setattr(settings_module, "_OPTIONS_PATH", _write_options(tmp_path, options))
     monkeypatch.setenv("SUPERVISOR_TOKEN", "supervisor-token")
@@ -62,7 +62,7 @@ def test_load_maps_the_options_json_structure(monkeypatch, tmp_path):
     assert settings.auto_eco_enabled is True
     assert settings.auto_eco_outside_temp_threshold == 14.5
     assert settings.auto_eco_inside_temp_diff == 2.0
-    assert settings.interval == 300
+    assert settings.interval == 180
 
 
 def _load(monkeypatch, tmp_path, **sections) -> Settings:

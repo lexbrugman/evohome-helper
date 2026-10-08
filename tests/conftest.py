@@ -47,7 +47,7 @@ def make_settings(**overrides) -> Settings:
         auto_eco_enabled=True,
         auto_eco_outside_temp_threshold=14,
         auto_eco_inside_temp_diff=2,
-        interval=300,
+        interval=180,
     )
     defaults.update(overrides)
     return Settings(**defaults)
