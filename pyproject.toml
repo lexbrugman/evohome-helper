@@ -3,7 +3,7 @@ package-mode = false
 
 [tool.poetry.dependencies]
 python = ">=3.13.2,<4.0"
-evohome-async = ">=2,<3"
+evohome-async = ">=3,<4"
 aiohttp = "^3.14"
 tenacity = "^9.1"
 
