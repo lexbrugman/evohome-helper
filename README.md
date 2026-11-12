@@ -22,6 +22,9 @@ Presence is read from Home Assistant entities that report `home` when someone is
 (`person.*` or `device_tracker.*`). The time the last person left is taken from the
 entity's state change time (`last_changed`).
 
+The thermostat is checked every interval. Someone arriving home does not have to wait
+for that: Home Assistant reports the arrival as it happens.
+
 Manual changes on the thermostat (a system mode or a zone override set by hand) are
 left alone until they are cleared.
 

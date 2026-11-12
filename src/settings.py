@@ -26,6 +26,7 @@ class Settings:
     evohome_away_mode: AwayMode
     evohome_token_cache_path: str
     homeassistant_url: str
+    homeassistant_websocket_url: str
     homeassistant_token: str
     homeassistant_presence_entities: list[str]
     homeassistant_auto_eco_weather_entity: str | None
@@ -57,6 +58,7 @@ class Settings:
             evohome_away_mode=AwayMode(config["evohome"]["away_mode"]),
             evohome_token_cache_path="/data/evohome_token_cache.json",
             homeassistant_url="http://supervisor/core",
+            homeassistant_websocket_url="ws://supervisor/core/websocket",
             homeassistant_token=os.environ["SUPERVISOR_TOKEN"],
             homeassistant_presence_entities=config["presence"]["entities"],
             # the option is optional: an empty or absent entity id means "not configured"

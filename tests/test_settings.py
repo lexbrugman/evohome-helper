@@ -55,6 +55,7 @@ def test_load_maps_the_options_json_structure(monkeypatch, tmp_path):
     assert settings.evohome_away_mode == AwayMode.ECO
     assert settings.evohome_token_cache_path == "/data/evohome_token_cache.json"
     assert settings.homeassistant_url == "http://supervisor/core"
+    assert settings.homeassistant_websocket_url == "ws://supervisor/core/websocket"
     assert settings.homeassistant_token == "supervisor-token"
     assert settings.homeassistant_presence_entities == ["person.a", "person.b"]
     assert settings.homeassistant_auto_eco_weather_entity == "weather.home"

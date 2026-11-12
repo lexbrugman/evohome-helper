@@ -5,8 +5,10 @@ import logging
 import os
 import signal
 
+from contextlib import suppress
 from logging import config as log_config
 
+from evohome_helper.arrivals import ArrivalListener
 from evohome_helper.evohome import EvohomeController
 from evohome_helper.evohome_client import UNRECOVERABLE_ERRORS, EvohomeService, is_transient_error
 from evohome_helper.homeassistant import HomeAssistantClient
@@ -19,6 +21,18 @@ log_config.fileConfig(os.path.join(os.path.dirname(__file__), "logging.conf"))
 logger = logging.getLogger(__name__)
 
 CONSECUTIVE_FAILURES_BEFORE_RESET = 3
+# an arrival starts a cycle early, but never sooner than this after the previous one: a
+# tracker flapping between home and away must not burn the vendor's tight API rate limit
+MINIMUM_CYCLE_GAP = 30
+
+
+async def _wait_for_any(timeout: float, *events: asyncio.Event) -> None:
+    waiters = [asyncio.ensure_future(event.wait()) for event in events]
+    try:
+        await asyncio.wait(waiters, timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        for waiter in waiters:
+            waiter.cancel()
 
 
 class Application:
@@ -30,6 +44,7 @@ class Application:
         presence: PresenceTracker,
         weather: WeatherService,
         homeassistant: HomeAssistantClient,
+        arrival_listener: ArrivalListener,
     ):
         self._settings = settings
         self._evohome_service = evohome_service
@@ -37,6 +52,8 @@ class Application:
         self._presence = presence
         self._weather = weather
         self._homeassistant = homeassistant
+        self._arrival_listener = arrival_listener
+        self._someone_arrived = asyncio.Event()
 
     async def determine_and_set_thermostat_mode(self) -> None:
         await self._presence.refresh()
@@ -83,9 +100,14 @@ class Application:
             loop.add_signal_handler(shutdown_signal, shutdown_event.set)
 
         consecutive_failures = 0
+        listener = asyncio.create_task(self._arrival_listener.run(self._someone_arrived.set))
 
         try:
             while not shutdown_event.is_set():
+                # cleared before the cycle reads presence, not after: an arrival during
+                # the cycle may have been missed by it and must start another one
+                self._someone_arrived.clear()
+
                 try:
                     await self.determine_and_set_thermostat_mode()
                     consecutive_failures = 0
@@ -111,18 +133,32 @@ class Application:
                         await self._evohome_service.reset()
                         consecutive_failures = 0
 
-                try:
-                    await asyncio.wait_for(shutdown_event.wait(), timeout=self._settings.interval)
-                except TimeoutError:
-                    pass
+                await self._wait_for_next_cycle(shutdown_event)
         finally:
             logger.info("shutting down")
+
+            listener.cancel()
+            with suppress(asyncio.CancelledError):
+                await listener
 
             for shutdown_signal in (signal.SIGINT, signal.SIGTERM):
                 loop.remove_signal_handler(shutdown_signal)
 
             await self._homeassistant.close()
             await self._evohome_service.close()
+
+    async def _wait_for_next_cycle(self, shutdown_event: asyncio.Event) -> None:
+        """Sleep out the interval, or until someone arrives home (but then at least the
+        minimum gap between cycles), or until shutdown."""
+        minimum_gap = min(MINIMUM_CYCLE_GAP, self._settings.interval)
+
+        await _wait_for_any(minimum_gap, shutdown_event)
+        if shutdown_event.is_set():
+            return
+
+        await _wait_for_any(self._settings.interval - minimum_gap, shutdown_event, self._someone_arrived)
+        if self._someone_arrived.is_set():
+            logger.info("someone arrived home; not waiting for the next interval")
 
 
 def build_application(settings: Settings) -> Application:
@@ -131,8 +167,9 @@ def build_application(settings: Settings) -> Application:
     weather = WeatherService(homeassistant, settings)
     evohome_service = EvohomeService(settings)
     controller = EvohomeController(evohome_service, settings)
+    arrival_listener = ArrivalListener(settings)
 
-    return Application(settings, evohome_service, controller, presence, weather, homeassistant)
+    return Application(settings, evohome_service, controller, presence, weather, homeassistant, arrival_listener)
 
 
 async def main() -> None:

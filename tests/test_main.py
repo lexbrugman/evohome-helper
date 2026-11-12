@@ -34,13 +34,27 @@ def _fake_presence(*, someone_home=False, recently_home=False, just_left=False, 
     return presence
 
 
+def _fake_arrival_listener(*, arrivals=0):
+    """Reports the given number of arrivals as soon as the loop starts, then keeps
+    listening until it is cancelled, as the real listener does."""
+    listener = Mock()
+
+    async def run(on_arrival):
+        for _ in range(arrivals):
+            on_arrival()
+        await asyncio.Event().wait()
+
+    listener.run = Mock(side_effect=run)
+    return listener
+
+
 def _build_app(settings, service, presence, outside_temp=10):
     weather = Mock()
     weather.get_current_temperature = AsyncMock(return_value=outside_temp)
     controller = EvohomeController(service, settings)
     homeassistant = Mock()
     homeassistant.close = AsyncMock()
-    return main.Application(settings, service, controller, presence, weather, homeassistant)
+    return main.Application(settings, service, controller, presence, weather, homeassistant, _fake_arrival_listener())
 
 
 @pytest.mark.parametrize(
@@ -158,13 +172,94 @@ async def test_set_thermostat_mode_skips_the_weather_when_auto_eco_is_disabled(m
     state.control_system.set_mode.assert_awaited_once_with(SystemMode.AUTO)
 
 
-def _minimal_app(settings, *, interval):
+def _minimal_app(settings, *, interval, arrivals=0):
     service = Mock()
     service.close = AsyncMock()
     service.reset = AsyncMock()
     homeassistant = Mock()
     homeassistant.close = AsyncMock()
-    return main.Application(replace(settings, interval=interval), service, Mock(), Mock(), Mock(), homeassistant)
+    listener = _fake_arrival_listener(arrivals=arrivals)
+    return main.Application(replace(settings, interval=interval), service, Mock(), Mock(), Mock(), homeassistant, listener)
+
+
+async def _run_until_cycles(app, cycles):
+    """Run the loop until it has completed the given number of cycles; returns how long
+    that took."""
+    app.determine_and_set_thermostat_mode = AsyncMock()
+    started = asyncio.get_running_loop().time()
+
+    task = asyncio.create_task(app.run())
+    try:
+        async with asyncio.timeout(2):
+            while app.determine_and_set_thermostat_mode.await_count < cycles:
+                await asyncio.sleep(0.005)
+        return asyncio.get_running_loop().time() - started
+    finally:
+        os.kill(os.getpid(), signal.SIGTERM)
+        await asyncio.wait_for(task, timeout=2)
+
+
+async def test_run_starts_a_cycle_early_when_someone_arrives(settings, monkeypatch):
+    monkeypatch.setattr(main, "MINIMUM_CYCLE_GAP", 0.01)
+    app = _minimal_app(settings, interval=60, arrivals=1)
+
+    # the second cycle would otherwise be a minute away
+    await _run_until_cycles(app, 2)
+
+
+async def test_run_starts_another_cycle_for_an_arrival_during_a_cycle(settings, monkeypatch):
+    # that cycle may have read presence before the arrival
+    monkeypatch.setattr(main, "MINIMUM_CYCLE_GAP", 0.01)
+    app = _minimal_app(settings, interval=60)
+    cycles = []
+
+    async def cycle():
+        cycles.append(1)
+        if len(cycles) == 1:
+            app._someone_arrived.set()
+
+    app.determine_and_set_thermostat_mode = cycle
+
+    task = asyncio.create_task(app.run())
+    try:
+        async with asyncio.timeout(2):
+            while len(cycles) < 2:
+                await asyncio.sleep(0.005)
+    finally:
+        os.kill(os.getpid(), signal.SIGTERM)
+        await asyncio.wait_for(task, timeout=2)
+
+
+async def test_run_keeps_the_minimum_gap_between_cycles_when_someone_arrives(settings, monkeypatch):
+    # a flapping tracker must not burn the vendor's rate limit
+    monkeypatch.setattr(main, "MINIMUM_CYCLE_GAP", 0.2)
+    app = _minimal_app(settings, interval=60, arrivals=5)
+
+    assert await _run_until_cycles(app, 2) >= 0.2
+
+
+async def test_run_waits_out_the_interval_when_no_one_arrives(settings, monkeypatch):
+    monkeypatch.setattr(main, "MINIMUM_CYCLE_GAP", 0.01)
+    app = _minimal_app(settings, interval=0.2)
+
+    assert await _run_until_cycles(app, 2) >= 0.2
+
+
+async def test_run_stops_the_arrival_listener_on_shutdown(settings):
+    app = _minimal_app(settings, interval=60)
+    stopped = asyncio.Event()
+
+    async def run(on_arrival):
+        try:
+            await asyncio.Event().wait()
+        finally:
+            stopped.set()
+
+    app._arrival_listener.run = run
+
+    await _run_until_cycles(app, 1)
+
+    assert stopped.is_set()
 
 
 async def test_run_shuts_down_gracefully_on_sigterm(settings):

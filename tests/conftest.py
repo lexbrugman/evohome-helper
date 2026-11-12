@@ -39,6 +39,7 @@ def make_settings(**overrides) -> Settings:
         evohome_away_mode=AwayMode.AWAY,
         evohome_token_cache_path="/nonexistent/evohome_token_cache.json",
         homeassistant_url="http://ha.local",
+        homeassistant_websocket_url="ws://ha.local/websocket",
         homeassistant_token="token",
         homeassistant_presence_entities=["person.a", "person.b"],
         homeassistant_auto_eco_weather_entity="weather.home",
