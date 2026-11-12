@@ -19,6 +19,7 @@ class HeatingMode(Enum):
 class Situation:
     someone_home: bool | None  # None: presence could not be determined
     someone_home_recently: bool
+    someone_left_just_now: bool
     in_preheat_window: bool
     highest_scheduled_setpoint: float | None  # None: no zone has a usable schedule
     outside_temperature: float | None  # None: unknown, or auto-eco disabled
@@ -40,6 +41,12 @@ def decide(situation: Situation, settings: Settings) -> Decision:
 
     if situation.someone_home_recently and situation.in_preheat_window:
         return _normal(situation, settings, "no one is home, but pre-heating after a scheduled setpoint increase as the home is in daily use")
+
+    if situation.someone_left_just_now:
+        # a tracker that briefly drops out must not cost a switch to away and one back;
+        # unchanged rather than normal, so a restart during the delay does not undo an
+        # away mode that is already set
+        return Decision(None, "no one is home, but someone left only just now; leaving the thermostat unchanged")
 
     return Decision(HeatingMode.AWAY, "no one is home")
 

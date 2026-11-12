@@ -25,11 +25,12 @@ def _preheat_schedule(evohome_factory, *, in_window):
     return evohome_factory.preheat_schedule(20, "06:00:00")
 
 
-def _fake_presence(*, someone_home=False, recently_home=False, known=True):
+def _fake_presence(*, someone_home=False, recently_home=False, just_left=False, known=True):
     presence = Mock()
     presence.refresh = AsyncMock()
     presence.is_someone_home = Mock(return_value=someone_home if known else None)
     presence.was_someone_home_recently = Mock(return_value=recently_home)
+    presence.did_someone_leave_just_now = Mock(return_value=just_left)
     return presence
 
 
@@ -116,6 +117,18 @@ async def test_thermostat_unchanged_when_presence_unknown(make_service, evohome_
     app = _build_app(settings, service, presence)
 
     await app.determine_and_set_thermostat_mode()
+
+    state.control_system.set_mode.assert_not_awaited()
+
+
+async def test_thermostat_unchanged_when_someone_left_just_now(make_service, evohome_factory, settings):
+    state = evohome_factory.complete_state(system_mode=SystemMode.AUTO)
+    service = make_service(locations=[state.location])
+    presence = _fake_presence(someone_home=False, recently_home=True, just_left=True)
+    app = _build_app(settings, service, presence)
+
+    with freeze_time("2024-04-10 08:00:00"):
+        await app.determine_and_set_thermostat_mode()
 
     state.control_system.set_mode.assert_not_awaited()
 

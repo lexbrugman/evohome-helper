@@ -44,6 +44,7 @@ def make_settings(**overrides) -> Settings:
         homeassistant_auto_eco_weather_entity="weather.home",
         presence_last_home_grace_time=86400,
         presence_heating_schedule_grace_time=1800,
+        presence_away_delay=300,
         auto_eco_enabled=True,
         auto_eco_outside_temp_threshold=14,
         auto_eco_inside_temp_diff=2,

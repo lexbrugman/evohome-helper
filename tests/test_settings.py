@@ -34,6 +34,7 @@ def test_load_maps_the_options_json_structure(monkeypatch, tmp_path):
             "entities": ["person.a", "person.b"],
             "last_home_grace_time": 1200,
             "heating_schedule_grace_time": 1800,
+            "away_delay": 600,
         },
         "auto_eco": {
             "enabled": True,
@@ -59,6 +60,7 @@ def test_load_maps_the_options_json_structure(monkeypatch, tmp_path):
     assert settings.homeassistant_auto_eco_weather_entity == "weather.home"
     assert settings.presence_last_home_grace_time == 1200
     assert settings.presence_heating_schedule_grace_time == 1800
+    assert settings.presence_away_delay == 600
     assert settings.auto_eco_enabled is True
     assert settings.auto_eco_outside_temp_threshold == 14.5
     assert settings.auto_eco_inside_temp_diff == 2.0
@@ -78,6 +80,11 @@ def test_load_treats_an_empty_or_absent_weather_entity_as_not_configured(monkeyp
     auto_eco = {"enabled": False, "outside_temp_threshold": 14.5, "inside_temp_diff": 2.0, **weather_entity}
 
     assert _load(monkeypatch, tmp_path, auto_eco=auto_eco).homeassistant_auto_eco_weather_entity is None
+
+
+def test_load_defaults_the_away_delay_when_the_option_is_absent(monkeypatch, tmp_path):
+    # an add-on configuration from before the option existed must not crash-loop the add-on
+    assert _load(monkeypatch, tmp_path).presence_away_delay == 300
 
 
 @pytest.mark.parametrize(

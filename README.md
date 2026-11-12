@@ -11,6 +11,8 @@ Depends on Home Assistant for presence and weather information.
 ## Features
 
 - **Presence detection**: switches to the configured away mode when no-one is home.
+  The switch waits until everyone has been gone for a few minutes, so a phone that
+  briefly drops off the network does not turn the heating down.
 - **Pre-heating**: for a while after the schedule raises a setpoint, the heating stays on
   even if no-one is detected yet, so the home is warm on arrival. A home that has been
   empty for a longer period (holiday) is not pre-heated.

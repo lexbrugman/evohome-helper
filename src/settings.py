@@ -31,6 +31,7 @@ class Settings:
     homeassistant_auto_eco_weather_entity: str | None
     presence_last_home_grace_time: float
     presence_heating_schedule_grace_time: float
+    presence_away_delay: float
     auto_eco_enabled: bool
     auto_eco_outside_temp_threshold: float
     auto_eco_inside_temp_diff: float
@@ -62,6 +63,8 @@ class Settings:
             homeassistant_auto_eco_weather_entity=config["auto_eco"].get("weather_entity") or None,
             presence_last_home_grace_time=config["presence"]["last_home_grace_time"],
             presence_heating_schedule_grace_time=config["presence"]["heating_schedule_grace_time"],
+            # newer than the other options: an add-on configuration from before it existed lacks the key
+            presence_away_delay=config["presence"].get("away_delay", 300),
             auto_eco_enabled=config["auto_eco"]["enabled"],
             auto_eco_outside_temp_threshold=config["auto_eco"]["outside_temp_threshold"],
             auto_eco_inside_temp_diff=config["auto_eco"]["inside_temp_diff"],

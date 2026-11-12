@@ -195,6 +195,56 @@ async def test_unusable_last_changed_is_backfilled_by_the_next_reading(fake_home
     assert _home(tracker, "person.a").left_at == _ago(100)
 
 
+@pytest.mark.parametrize(
+    "seconds_ago,expected",
+    [
+        (299, True),
+        (300, False),  # the delay has passed
+    ],
+)
+@freeze_time(NOW)
+async def test_did_someone_leave_just_now_within_the_away_delay(fake_homeassistant, settings, seconds_ago, expected):
+    # the most recent departure counts, whoever else left long ago
+    fake_homeassistant.set_state("person.a", _state("not_home", seconds_ago=seconds_ago))
+    fake_homeassistant.set_state("person.b", _state("not_home", seconds_ago=9999))
+    tracker = PresenceTracker(fake_homeassistant, settings)
+
+    await tracker.refresh()
+
+    assert tracker.did_someone_leave_just_now() is expected
+
+
+@freeze_time(NOW)
+async def test_away_delay_of_zero_disables_it(fake_homeassistant):
+    fake_homeassistant.set_state("person.a", _state("not_home", seconds_ago=0))
+    tracker = PresenceTracker(fake_homeassistant, make_settings(presence_away_delay=0))
+
+    await tracker.refresh()
+
+    assert tracker.did_someone_leave_just_now() is False
+
+
+@freeze_time(NOW)
+async def test_unknown_departure_time_does_not_delay_away(fake_homeassistant, settings):
+    # never assume someone is still around
+    fake_homeassistant.set_state("person.a", _state("not_home", last_changed="garbage"))
+    tracker = PresenceTracker(fake_homeassistant, settings)
+
+    await tracker.refresh()
+
+    assert tracker.did_someone_leave_just_now() is False
+
+
+@freeze_time(NOW)
+async def test_a_brief_return_home_restarts_the_away_delay(fake_homeassistant, settings):
+    tracker = PresenceTracker(fake_homeassistant, settings)
+    for state, seconds_ago in (("not_home", 2000), ("home", 100), ("not_home", 10)):
+        fake_homeassistant.set_state("person.a", _state(state, seconds_ago=seconds_ago))
+        await tracker.refresh()
+
+    assert tracker.did_someone_leave_just_now() is True
+
+
 async def test_stale_reading_ages_out_of_the_window(fake_homeassistant, settings):
     """A reading that cannot be refreshed must not count as recent for as long as HA is unreachable."""
     tracker = PresenceTracker(fake_homeassistant, settings)

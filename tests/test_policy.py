@@ -6,7 +6,14 @@ from evohome_helper.policy import HeatingMode, Situation, decide
 
 
 def _situation(**overrides):
-    defaults = dict(someone_home=False, someone_home_recently=False, in_preheat_window=False, highest_scheduled_setpoint=20.0, outside_temperature=10.0)
+    defaults = dict(
+        someone_home=False,
+        someone_home_recently=False,
+        someone_left_just_now=False,
+        in_preheat_window=False,
+        highest_scheduled_setpoint=20.0,
+        outside_temperature=10.0,
+    )
     defaults.update(overrides)
     return Situation(**defaults)
 
@@ -36,6 +43,29 @@ def test_decide_leaves_the_thermostat_alone_when_presence_is_unknown(settings):
 
     assert decision.mode is None
     assert "unchanged" in decision.reason
+
+
+def test_decide_leaves_the_thermostat_alone_when_someone_left_just_now(settings):
+    # unchanged, not normal: an away mode that is already set must not be undone
+    situation = _situation(someone_home=False, someone_home_recently=True, someone_left_just_now=True)
+
+    decision = decide(situation, settings)
+
+    assert decision.mode is None
+    assert "unchanged" in decision.reason
+
+
+@pytest.mark.parametrize(
+    "someone_home,in_preheat_window",
+    [
+        (True, False),  # the delay only ever holds back the switch to away
+        (False, True),
+    ],
+)
+def test_decide_heats_normally_despite_a_recent_departure(settings, someone_home, in_preheat_window):
+    situation = _situation(someone_home=someone_home, someone_home_recently=True, someone_left_just_now=True, in_preheat_window=in_preheat_window)
+
+    assert decide(situation, settings).mode == HeatingMode.NORMAL
 
 
 @pytest.mark.parametrize(
