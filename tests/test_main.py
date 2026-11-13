@@ -182,21 +182,28 @@ def _minimal_app(settings, *, interval, arrivals=0):
     return main.Application(replace(settings, interval=interval), service, Mock(), Mock(), Mock(), homeassistant, listener)
 
 
-async def _run_until_cycles(app, cycles):
-    """Run the loop until it has completed the given number of cycles; returns how long
-    that took."""
-    app.determine_and_set_thermostat_mode = AsyncMock()
+async def _run_cycles(app, outcomes):
+    """Run the loop for one cycle per outcome -- an exception to fail with, a callable to
+    call, or None to simply succeed -- and shut it down during the last one; returns how
+    long that took."""
+    outcomes = list(outcomes)
+
+    async def cycle():
+        outcome = outcomes.pop(0)
+        if not outcomes:
+            os.kill(os.getpid(), signal.SIGTERM)
+        if isinstance(outcome, Exception):
+            raise outcome
+        if outcome is not None:
+            outcome()
+
+    app.determine_and_set_thermostat_mode = AsyncMock(side_effect=cycle)
     started = asyncio.get_running_loop().time()
 
-    task = asyncio.create_task(app.run())
-    try:
-        async with asyncio.timeout(2):
-            while app.determine_and_set_thermostat_mode.await_count < cycles:
-                await asyncio.sleep(0.005)
-        return asyncio.get_running_loop().time() - started
-    finally:
-        os.kill(os.getpid(), signal.SIGTERM)
-        await asyncio.wait_for(task, timeout=2)
+    await asyncio.wait_for(app.run(), timeout=5)
+
+    assert not outcomes
+    return asyncio.get_running_loop().time() - started
 
 
 async def test_run_starts_a_cycle_early_when_someone_arrives(settings, monkeypatch):
@@ -204,30 +211,15 @@ async def test_run_starts_a_cycle_early_when_someone_arrives(settings, monkeypat
     app = _minimal_app(settings, interval=60, arrivals=1)
 
     # the second cycle would otherwise be a minute away
-    await _run_until_cycles(app, 2)
+    await _run_cycles(app, [None, None])
 
 
 async def test_run_starts_another_cycle_for_an_arrival_during_a_cycle(settings, monkeypatch):
     # that cycle may have read presence before the arrival
     monkeypatch.setattr(main, "MINIMUM_CYCLE_GAP", 0.01)
     app = _minimal_app(settings, interval=60)
-    cycles = []
 
-    async def cycle():
-        cycles.append(1)
-        if len(cycles) == 1:
-            app._someone_arrived.set()
-
-    app.determine_and_set_thermostat_mode = cycle
-
-    task = asyncio.create_task(app.run())
-    try:
-        async with asyncio.timeout(2):
-            while len(cycles) < 2:
-                await asyncio.sleep(0.005)
-    finally:
-        os.kill(os.getpid(), signal.SIGTERM)
-        await asyncio.wait_for(task, timeout=2)
+    await _run_cycles(app, [app._someone_arrived.set, None])
 
 
 async def test_run_keeps_the_minimum_gap_between_cycles_when_someone_arrives(settings, monkeypatch):
@@ -235,14 +227,14 @@ async def test_run_keeps_the_minimum_gap_between_cycles_when_someone_arrives(set
     monkeypatch.setattr(main, "MINIMUM_CYCLE_GAP", 0.2)
     app = _minimal_app(settings, interval=60, arrivals=5)
 
-    assert await _run_until_cycles(app, 2) >= 0.2
+    assert await _run_cycles(app, [None, None]) >= 0.2
 
 
 async def test_run_waits_out_the_interval_when_no_one_arrives(settings, monkeypatch):
     monkeypatch.setattr(main, "MINIMUM_CYCLE_GAP", 0.01)
     app = _minimal_app(settings, interval=0.2)
 
-    assert await _run_until_cycles(app, 2) >= 0.2
+    assert await _run_cycles(app, [None, None]) >= 0.2
 
 
 async def test_run_stops_the_arrival_listener_on_shutdown(settings):
@@ -257,21 +249,16 @@ async def test_run_stops_the_arrival_listener_on_shutdown(settings):
 
     app._arrival_listener.run = run
 
-    await _run_until_cycles(app, 1)
+    await _run_cycles(app, [None])
 
     assert stopped.is_set()
 
 
 async def test_run_shuts_down_gracefully_on_sigterm(settings):
     app = _minimal_app(settings, interval=60)
-    app.determine_and_set_thermostat_mode = AsyncMock()
 
-    task = asyncio.create_task(app.run())
-    await asyncio.sleep(0.05)
-    os.kill(os.getpid(), signal.SIGTERM)
+    await _run_cycles(app, [None])
 
-    await asyncio.wait_for(task, timeout=2)
-    app.determine_and_set_thermostat_mode.assert_awaited()
     # the finally block must release both aiohttp sessions
     app._homeassistant.close.assert_awaited_once()
     app._evohome_service.close.assert_awaited_once()
@@ -281,25 +268,13 @@ async def test_run_resets_only_after_consecutive_failures(settings):
     """Two failures, a success, then three failures: the success must break the streak,
     so exactly one reset fires, and only after the three consecutive failures."""
     app = _minimal_app(settings, interval=0.01)
-    log = []
     boom = ApiCallFailedError("boom")
-    outcomes = [boom, boom, None, boom, boom, boom]
+    cycles_before_reset = []
+    app._evohome_service.reset = AsyncMock(side_effect=lambda: cycles_before_reset.append(app.determine_and_set_thermostat_mode.await_count))
 
-    async def scripted():
-        if not outcomes:  # script exhausted: stop the loop
-            os.kill(os.getpid(), signal.SIGTERM)
-            return
-        log.append("cycle")
-        outcome = outcomes.pop(0)
-        if outcome is not None:
-            raise outcome
+    await _run_cycles(app, [boom, boom, None, boom, boom, boom])
 
-    app.determine_and_set_thermostat_mode = scripted
-    app._evohome_service.reset = AsyncMock(side_effect=lambda: log.append("reset"))
-
-    await asyncio.wait_for(app.run(), timeout=5)
-
-    assert log == ["cycle"] * 6 + ["reset"]
+    assert cycles_before_reset == [6]
 
 
 @pytest.mark.parametrize(
@@ -313,34 +288,16 @@ async def test_run_resets_only_after_consecutive_failures(settings):
 async def test_run_does_not_reset_on_errors_a_reset_cannot_cure(settings, error):
     """Only transient failures may churn the rate-limited vendor API with a re-authentication."""
     app = _minimal_app(settings, interval=0.01)
-    outcomes = [error] * (main.CONSECUTIVE_FAILURES_BEFORE_RESET + 1)
 
-    async def scripted():
-        if not outcomes:
-            os.kill(os.getpid(), signal.SIGTERM)
-            return
-        raise outcomes.pop(0)
-
-    app.determine_and_set_thermostat_mode = scripted
-
-    await asyncio.wait_for(app.run(), timeout=5)
+    await _run_cycles(app, [error] * (main.CONSECUTIVE_FAILURES_BEFORE_RESET + 1))
 
     app._evohome_service.reset.assert_not_awaited()
 
 
 async def test_run_logs_a_transient_failure_as_one_line_and_a_bug_with_its_traceback(settings, caplog):
     app = _minimal_app(settings, interval=0.01)
-    outcomes = [ApiCallFailedError("temporary failure", status=503), ValueError("bug")]
 
-    async def scripted():
-        if not outcomes:
-            os.kill(os.getpid(), signal.SIGTERM)
-            return
-        raise outcomes.pop(0)
-
-    app.determine_and_set_thermostat_mode = scripted
-
-    await asyncio.wait_for(app.run(), timeout=5)
+    await _run_cycles(app, [ApiCallFailedError("temporary failure", status=503), ValueError("bug")])
 
     failures = [record for record in caplog.records if record.name == main.logger.name and record.levelno >= logging.WARNING]
     assert [(record.levelno, record.exc_info is not None) for record in failures] == [(logging.WARNING, False), (logging.ERROR, True)]
@@ -366,17 +323,3 @@ async def test_run_exits_on_a_misconfiguration_that_cannot_recover(settings, err
     # the finally block must still release both aiohttp sessions
     app._homeassistant.close.assert_awaited_once()
     app._evohome_service.close.assert_awaited_once()
-
-
-async def test_run_resets_evohome_client_after_repeated_failures(settings):
-    app = _minimal_app(settings, interval=0.01)
-    app.determine_and_set_thermostat_mode = AsyncMock(side_effect=ApiCallFailedError("boom"))
-
-    task = asyncio.create_task(app.run())
-    async with asyncio.timeout(2):
-        while app._evohome_service.reset.await_count == 0:
-            await asyncio.sleep(0.01)
-    os.kill(os.getpid(), signal.SIGTERM)
-    await asyncio.wait_for(task, timeout=2)
-
-    assert app.determine_and_set_thermostat_mode.await_count >= main.CONSECUTIVE_FAILURES_BEFORE_RESET
