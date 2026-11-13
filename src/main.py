@@ -5,7 +5,8 @@ import logging
 import os
 import signal
 
-from contextlib import suppress
+from collections.abc import AsyncIterator, Coroutine, Iterator
+from contextlib import asynccontextmanager, contextmanager, suppress
 from logging import config as log_config
 
 from evohome_helper.arrivals import ArrivalListener
@@ -24,6 +25,34 @@ CONSECUTIVE_FAILURES_BEFORE_RESET = 3
 # an arrival starts a cycle early, but never sooner than this after the previous one: a
 # tracker flapping between home and away must not burn the vendor's tight API rate limit
 MINIMUM_CYCLE_GAP = 30
+
+
+@contextmanager
+def _shutdown_signals() -> Iterator[asyncio.Event]:
+    """An event that is set when the process is asked to stop."""
+    shutdown_event = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    signals = (signal.SIGINT, signal.SIGTERM)
+
+    for shutdown_signal in signals:
+        loop.add_signal_handler(shutdown_signal, shutdown_event.set)
+    try:
+        yield shutdown_event
+    finally:
+        for shutdown_signal in signals:
+            loop.remove_signal_handler(shutdown_signal)
+
+
+@asynccontextmanager
+async def _in_background(coroutine: Coroutine) -> AsyncIterator[None]:
+    """Run the coroutine alongside the block, and cancel it when the block ends."""
+    task = asyncio.create_task(coroutine)
+    try:
+        yield
+    finally:
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
 
 
 async def _wait_for_any(timeout: float, *events: asyncio.Event) -> None:
@@ -54,6 +83,7 @@ class Application:
         self._homeassistant = homeassistant
         self._arrival_listener = arrival_listener
         self._someone_arrived = asyncio.Event()
+        self._consecutive_failures = 0
 
     async def determine_and_set_thermostat_mode(self) -> None:
         await self._presence.refresh()
@@ -93,59 +123,54 @@ class Application:
             await self._controller.apply(decision.mode, location)
 
     async def run(self) -> None:
-        shutdown_event = asyncio.Event()
-
-        loop = asyncio.get_running_loop()
-        for shutdown_signal in (signal.SIGINT, signal.SIGTERM):
-            loop.add_signal_handler(shutdown_signal, shutdown_event.set)
-
-        consecutive_failures = 0
-        listener = asyncio.create_task(self._arrival_listener.run(self._someone_arrived.set))
-
         try:
-            while not shutdown_event.is_set():
-                # cleared before the cycle reads presence, not after: an arrival during
-                # the cycle may have been missed by it and must start another one
-                self._someone_arrived.clear()
+            with _shutdown_signals() as shutdown_event:
+                async with _in_background(self._arrival_listener.run(self._someone_arrived.set)):
+                    while not shutdown_event.is_set():
+                        # cleared before the cycle reads presence, not after: an arrival
+                        # during the cycle may have been missed by it and must start another one
+                        self._someone_arrived.clear()
 
-                try:
-                    await self.determine_and_set_thermostat_mode()
-                    consecutive_failures = 0
-                except UNRECOVERABLE_ERRORS as error:
-                    # exit so a misconfiguration is visible instead of retried forever
-                    logger.critical("%s; exiting", error)
-                    raise
-                except Exception as error:
-                    # only failures that recreating the evohome client can plausibly cure (a
-                    # wedged session, a token the library failed to refresh) count toward a
-                    # reset; permanent errors, rate limiting and bugs would just churn the
-                    # heavily rate-limited vendor API with pointless re-authentications
-                    if is_transient_error(error):
-                        # expected during an outage, and the retries already logged their
-                        # attempts: one line, no traceback
-                        logger.warning("cycle failed: %s: %s", type(error).__name__, error)
-                        consecutive_failures += 1
-                    else:
-                        logger.exception("error in loop")
-
-                    if consecutive_failures >= CONSECUTIVE_FAILURES_BEFORE_RESET:
-                        logger.warning("resetting the evohome client after %d consecutive failures", consecutive_failures)
-                        await self._evohome_service.reset()
-                        consecutive_failures = 0
-
-                await self._wait_for_next_cycle(shutdown_event)
+                        await self._run_cycle()
+                        await self._wait_for_next_cycle(shutdown_event)
         finally:
             logger.info("shutting down")
 
-            listener.cancel()
-            with suppress(asyncio.CancelledError):
-                await listener
-
-            for shutdown_signal in (signal.SIGINT, signal.SIGTERM):
-                loop.remove_signal_handler(shutdown_signal)
-
             await self._homeassistant.close()
             await self._evohome_service.close()
+
+    async def _run_cycle(self) -> None:
+        """Run one cycle. Its failure is logged and survived, so the loop carries on --
+        except a misconfiguration, which is raised to end it."""
+        try:
+            await self.determine_and_set_thermostat_mode()
+        except UNRECOVERABLE_ERRORS as error:
+            # exit so a misconfiguration is visible instead of retried forever
+            logger.critical("%s; exiting", error)
+            raise
+        except Exception as error:
+            if not is_transient_error(error):
+                logger.exception("error in loop")
+                return
+
+            # expected during an outage, and the retries already logged their attempts:
+            # one line, no traceback
+            logger.warning("cycle failed: %s: %s", type(error).__name__, error)
+            await self._count_failure()
+        else:
+            self._consecutive_failures = 0
+
+    async def _count_failure(self) -> None:
+        # only failures that recreating the evohome client can plausibly cure (a wedged
+        # session, a token the library failed to refresh) count toward a reset; permanent
+        # errors, rate limiting and bugs would just churn the heavily rate-limited vendor
+        # API with pointless re-authentications
+        self._consecutive_failures += 1
+
+        if self._consecutive_failures >= CONSECUTIVE_FAILURES_BEFORE_RESET:
+            logger.warning("resetting the evohome client after %d consecutive failures", self._consecutive_failures)
+            await self._evohome_service.reset()
+            self._consecutive_failures = 0
 
     async def _wait_for_next_cycle(self, shutdown_event: asyncio.Event) -> None:
         """Sleep out the interval, or until someone arrives home (but then at least the
