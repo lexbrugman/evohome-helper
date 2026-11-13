@@ -1,6 +1,11 @@
+import asyncio
+
 from dataclasses import replace
 
+import pytest
+
 from aioresponses import aioresponses
+from conftest import FakeHomeAssistantWebsocket, trigger_event
 
 from evohome_helper.homeassistant import HomeAssistantClient
 
@@ -61,3 +66,67 @@ async def test_session_is_reused_until_closed(settings):
     assert third is not first
 
     await client.close()
+
+
+_TRIGGER = {"platform": "state", "entity_id": ["person.a"], "to": "home"}
+
+
+@pytest.fixture
+async def websocket_client(settings, serve_websocket):
+    """Build a HomeAssistantClient whose websocket reaches the given fake."""
+    clients = []
+
+    async def _build(homeassistant):
+        client = HomeAssistantClient(replace(settings, homeassistant_websocket_url=await serve_websocket(homeassistant)))
+        clients.append(client)
+        return client
+
+    yield _build
+
+    for client in clients:
+        await client.close()
+
+
+async def test_subscribe_trigger_authenticates_and_yields_the_variables_of_each_firing(websocket_client):
+    homeassistant = FakeHomeAssistantWebsocket([trigger_event("not_home"), {"id": 2, "type": "pong"}, trigger_event("Work")])
+    client = await websocket_client(homeassistant)
+    received = []
+
+    async with asyncio.timeout(2), client.subscribe_trigger(_TRIGGER) as firings:
+        async for variables in firings:
+            received.append(variables["trigger"]["from_state"]["state"])
+            if len(received) == 2:
+                break
+
+    # only events are firings
+    assert received == ["not_home", "Work"]
+    assert homeassistant.subscriptions == [{"id": 1, "type": "subscribe_trigger", "trigger": _TRIGGER}]
+
+
+async def test_subscribe_trigger_raises_when_the_connection_is_lost(websocket_client):
+    homeassistant = FakeHomeAssistantWebsocket([trigger_event("not_home")], [])
+    client = await websocket_client(homeassistant)
+    received = []
+
+    with pytest.raises(ConnectionError, match="closed"):
+        async with asyncio.timeout(2), client.subscribe_trigger(_TRIGGER) as firings:
+            async for variables in firings:
+                received.append(variables)
+
+    assert len(received) == 1
+
+
+async def test_subscribe_trigger_raises_on_rejected_credentials(websocket_client):
+    client = await websocket_client(FakeHomeAssistantWebsocket(token="another-token"))
+
+    with pytest.raises(ConnectionError, match="authentication failed: Invalid access token"):
+        async with asyncio.timeout(2), client.subscribe_trigger(_TRIGGER):
+            pytest.fail("entered without a subscription")
+
+
+async def test_subscribe_trigger_raises_on_a_rejected_subscription(websocket_client):
+    client = await websocket_client(FakeHomeAssistantWebsocket(accept_subscriptions=False))
+
+    with pytest.raises(ConnectionError, match="subscribing failed.*invalid_format"):
+        async with asyncio.timeout(2), client.subscribe_trigger(_TRIGGER):
+            pytest.fail("entered without a subscription")

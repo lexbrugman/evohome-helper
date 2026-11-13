@@ -3,61 +3,11 @@ import logging
 
 import pytest
 
-from aiohttp import web
-from aiohttp.test_utils import TestServer
-from conftest import make_settings
+from conftest import FakeHomeAssistantWebsocket, make_settings, trigger_event
 
 from evohome_helper import arrivals
 from evohome_helper.arrivals import ArrivalListener
-
-
-def _trigger_event(from_state, to_state="home"):
-    # shaped like the event Home Assistant sends when a subscribed state trigger fires
-    trigger = {
-        "platform": "state",
-        "entity_id": "person.a",
-        "from_state": {"entity_id": "person.a", "state": from_state, "attributes": {}},
-        "to_state": {"entity_id": "person.a", "state": to_state, "attributes": {}},
-    }
-    return {"id": 1, "type": "event", "event": {"variables": {"trigger": trigger}}}
-
-
-class FakeHomeAssistantWebsocket:
-    """Speaks the server side of Home Assistant's websocket API. Each connection gets the
-    next list of scripted messages; it is then dropped if more are scripted, and kept
-    open (as Home Assistant does) if it was the last."""
-
-    def __init__(self, *scripts, token="token"):
-        self._scripts = list(scripts)
-        self._token = token
-        self.connections = 0
-        self.subscriptions = []
-
-    async def handle(self, request):
-        websocket = web.WebSocketResponse()
-        await websocket.prepare(request)
-        self.connections += 1
-
-        await websocket.send_json({"type": "auth_required", "ha_version": "2026.11.0"})
-        auth = await websocket.receive_json()
-        if auth != {"type": "auth", "access_token": self._token}:
-            await websocket.send_json({"type": "auth_invalid", "message": "Invalid access token or password"})
-            await websocket.close()
-            return websocket
-        await websocket.send_json({"type": "auth_ok", "ha_version": "2026.11.0"})
-
-        subscription = await websocket.receive_json()
-        self.subscriptions.append(subscription)
-        await websocket.send_json({"id": subscription["id"], "type": "result", "success": True, "result": None})
-
-        for message in self._scripts.pop(0) if self._scripts else []:
-            await websocket.send_json(message)
-
-        if self._scripts:
-            await websocket.close()
-        else:
-            await websocket.receive()  # until the client goes away
-        return websocket
+from evohome_helper.homeassistant import HomeAssistantClient
 
 
 @pytest.fixture(autouse=True)
@@ -67,21 +17,15 @@ def fast_reconnects(monkeypatch):
 
 
 @pytest.fixture
-async def listen():
+async def listen(serve_websocket):
     """Run an ArrivalListener against the given fake until the condition holds; returns
     the number of arrivals it reported."""
-    servers = []
 
-    async def _listen(homeassistant, until, **settings_overrides):
-        app = web.Application()
-        app.router.add_get("/websocket", homeassistant.handle)
-        server = TestServer(app)
-        await server.start_server()
-        servers.append(server)
-
-        settings = make_settings(homeassistant_websocket_url=str(server.make_url("/websocket")), **settings_overrides)
+    async def _listen(homeassistant, until):
+        settings = make_settings(homeassistant_websocket_url=await serve_websocket(homeassistant))
+        client = HomeAssistantClient(settings)
         reported = []
-        task = asyncio.create_task(ArrivalListener(settings).run(lambda: reported.append(1)))
+        task = asyncio.create_task(ArrivalListener(client, settings).run(lambda: reported.append(1)))
         try:
             async with asyncio.timeout(2):
                 while not until(reported):
@@ -89,16 +33,14 @@ async def listen():
         finally:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
+            await client.close()
         return len(reported)
 
-    yield _listen
-
-    for server in servers:
-        await server.close()
+    return _listen
 
 
 async def test_subscribes_to_the_presence_entities_arriving_home(listen):
-    homeassistant = FakeHomeAssistantWebsocket([_trigger_event("not_home")])
+    homeassistant = FakeHomeAssistantWebsocket([trigger_event("not_home")])
 
     assert await listen(homeassistant, until=lambda reported: reported) == 1
 
@@ -114,10 +56,10 @@ async def test_subscribes_to_the_presence_entities_arriving_home(listen):
 async def test_only_a_move_into_home_is_an_arrival(listen):
     homeassistant = FakeHomeAssistantWebsocket(
         [
-            _trigger_event("home"),  # an attribute update while home
+            trigger_event("home"),  # an attribute update while home
             {"id": 2, "type": "pong"},
-            _trigger_event("unavailable"),
-            _trigger_event("Work"),
+            trigger_event("unavailable"),
+            trigger_event("Work"),
         ]
     )
 
@@ -126,7 +68,7 @@ async def test_only_a_move_into_home_is_an_arrival(listen):
 
 
 async def test_reconnects_when_the_connection_is_dropped(listen, caplog):
-    homeassistant = FakeHomeAssistantWebsocket([_trigger_event("not_home")], [], [_trigger_event("not_home")])
+    homeassistant = FakeHomeAssistantWebsocket([trigger_event("not_home")], [], [trigger_event("not_home")])
 
     assert await listen(homeassistant, until=lambda reported: len(reported) >= 2) == 2
 
@@ -149,6 +91,7 @@ async def test_keeps_retrying_rejected_credentials_but_warns_once(listen, caplog
 
 async def test_does_not_listen_without_presence_entities():
     # returns instead of connecting (to a host that does not even exist here)
-    listener = ArrivalListener(make_settings(homeassistant_presence_entities=[]))
+    settings = make_settings(homeassistant_presence_entities=[])
+    listener = ArrivalListener(HomeAssistantClient(settings), settings)
 
     await asyncio.wait_for(listener.run(lambda: None), timeout=1)

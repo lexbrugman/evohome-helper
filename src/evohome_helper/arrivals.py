@@ -3,31 +3,20 @@ import logging
 
 from collections.abc import Callable
 
-import aiohttp
-
+from evohome_helper.homeassistant import HomeAssistantClient
 from settings import Settings
 
 logger = logging.getLogger(__name__)
 
-_SUBSCRIPTION_ID = 1
-# connecting, authenticating and subscribing together
-_HANDSHAKE_TIMEOUT = 10
-# a connection that died silently (Home Assistant restarted, the network dropped) is
-# only noticed by pinging it
-_HEARTBEAT = 30
 _RECONNECT_DELAY_MIN = 5
 _RECONNECT_DELAY_MAX = 300
 
 
-def _is_arrival(message: dict) -> bool:
-    if message.get("type") != "event":
-        return False
-
+def _is_arrival(variables: dict) -> bool:
     # the trigger should not fire while the state stays "home" (person entities update
     # their attributes with every location fix), but each wake costs a vendor API call,
     # so do not depend on it
-    trigger = message.get("event", {}).get("variables", {}).get("trigger", {})
-    from_state = trigger.get("from_state") or {}
+    from_state = variables.get("trigger", {}).get("from_state") or {}
     return from_state.get("state") != "home"
 
 
@@ -38,7 +27,8 @@ class ArrivalListener:
     Only a signal: the loop still reads presence itself, so a missed or spurious event
     costs nothing but time, and polling carries on while the connection is down."""
 
-    def __init__(self, settings: Settings):
+    def __init__(self, homeassistant: HomeAssistantClient, settings: Settings):
+        self._homeassistant = homeassistant
         self._settings = settings
         self._subscribed = False
 
@@ -71,48 +61,13 @@ class ArrivalListener:
             delay = min(delay * 2, _RECONNECT_DELAY_MAX)
 
     async def _listen(self, on_arrival: Callable[[], None]) -> None:
-        async with aiohttp.ClientSession() as session:
-            async with asyncio.timeout(_HANDSHAKE_TIMEOUT):
-                websocket = await session.ws_connect(self._settings.homeassistant_websocket_url, heartbeat=_HEARTBEAT)
+        """Report arrivals until the connection is lost, which raises."""
+        trigger = {"platform": "state", "entity_id": self._settings.homeassistant_presence_entities, "to": "home"}
 
-            async with websocket:
-                async with asyncio.timeout(_HANDSHAKE_TIMEOUT):
-                    await self._authenticate(websocket)
-                    await self._subscribe(websocket)
+        async with self._homeassistant.subscribe_trigger(trigger) as firings:
+            self._subscribed = True
+            logger.info("listening for arrivals")
 
-                self._subscribed = True
-                logger.info("listening for arrivals")
-
-                async for message in websocket:
-                    if message.type == aiohttp.WSMsgType.TEXT and _is_arrival(message.json()):
-                        on_arrival()
-
-        raise ConnectionError("the connection was closed")
-
-    async def _authenticate(self, websocket: aiohttp.ClientWebSocketResponse) -> None:
-        # Home Assistant opens with auth_required and answers the token with auth_ok or auth_invalid
-        await websocket.receive_json()
-        await websocket.send_json({"type": "auth", "access_token": self._settings.homeassistant_token})
-
-        response = await websocket.receive_json()
-        if response.get("type") != "auth_ok":
-            raise ConnectionError(f"authentication failed: {response.get('message')}")
-
-    async def _subscribe(self, websocket: aiohttp.ClientWebSocketResponse) -> None:
-        # a trigger instead of the state_changed event: Home Assistant then only sends
-        # what is asked for, not every state change of every entity
-        await websocket.send_json(
-            {
-                "id": _SUBSCRIPTION_ID,
-                "type": "subscribe_trigger",
-                "trigger": {
-                    "platform": "state",
-                    "entity_id": self._settings.homeassistant_presence_entities,
-                    "to": "home",
-                },
-            }
-        )
-
-        response = await websocket.receive_json()
-        if not response.get("success"):
-            raise ConnectionError(f"subscribing failed: {response.get('error')}")
+            async for variables in firings:
+                if _is_arrival(variables):
+                    on_arrival()

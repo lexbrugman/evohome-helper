@@ -167,7 +167,7 @@ def build_application(settings: Settings) -> Application:
     weather = WeatherService(homeassistant, settings)
     evohome_service = EvohomeService(settings)
     controller = EvohomeController(evohome_service, settings)
-    arrival_listener = ArrivalListener(settings)
+    arrival_listener = ArrivalListener(homeassistant, settings)
 
     return Application(settings, evohome_service, controller, presence, weather, homeassistant, arrival_listener)
 

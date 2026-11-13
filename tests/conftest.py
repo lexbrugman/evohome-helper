@@ -8,6 +8,8 @@ from unittest.mock import AsyncMock, Mock
 import aiohttp
 import pytest
 
+from aiohttp import web
+from aiohttp.test_utils import TestServer
 from evohomeasync2 import DayOfWeek, FaultType, SystemMode, ZoneMode
 from evohomeasync2.exceptions import InvalidScheduleError, InvalidSystemModeError
 
@@ -258,6 +260,80 @@ class FakeHomeAssistant:
 @pytest.fixture
 def fake_homeassistant():
     return FakeHomeAssistant()
+
+
+def trigger_event(from_state, to_state="home"):
+    # shaped like the event Home Assistant sends when a subscribed state trigger fires
+    trigger = {
+        "platform": "state",
+        "entity_id": "person.a",
+        "from_state": {"entity_id": "person.a", "state": from_state, "attributes": {}},
+        "to_state": {"entity_id": "person.a", "state": to_state, "attributes": {}},
+    }
+    return {"id": 1, "type": "event", "event": {"variables": {"trigger": trigger}}}
+
+
+class FakeHomeAssistantWebsocket:
+    """Speaks the server side of Home Assistant's websocket API. Each connection gets the
+    next list of scripted messages; it is then dropped if more are scripted, and kept
+    open (as Home Assistant does) if it was the last."""
+
+    def __init__(self, *scripts, token="token", accept_subscriptions=True):
+        self._scripts = list(scripts)
+        self._token = token
+        self._accept_subscriptions = accept_subscriptions
+        self.connections = 0
+        self.subscriptions = []
+
+    async def handle(self, request):
+        websocket = web.WebSocketResponse()
+        await websocket.prepare(request)
+        self.connections += 1
+
+        await websocket.send_json({"type": "auth_required", "ha_version": "2026.11.0"})
+        auth = await websocket.receive_json()
+        if auth != {"type": "auth", "access_token": self._token}:
+            await websocket.send_json({"type": "auth_invalid", "message": "Invalid access token or password"})
+            await websocket.close()
+            return websocket
+        await websocket.send_json({"type": "auth_ok", "ha_version": "2026.11.0"})
+
+        subscription = await websocket.receive_json()
+        self.subscriptions.append(subscription)
+        if not self._accept_subscriptions:
+            error = {"code": "invalid_format", "message": "required key not provided"}
+            await websocket.send_json({"id": subscription["id"], "type": "result", "success": False, "error": error})
+            await websocket.receive()
+            return websocket
+        await websocket.send_json({"id": subscription["id"], "type": "result", "success": True, "result": None})
+
+        for message in self._scripts.pop(0) if self._scripts else []:
+            await websocket.send_json(message)
+
+        if self._scripts:
+            await websocket.close()
+        else:
+            await websocket.receive()  # until the client goes away
+        return websocket
+
+
+@pytest.fixture
+async def serve_websocket():
+    """Serve a FakeHomeAssistantWebsocket; returns the url it is reachable at."""
+    servers = []
+
+    async def _serve(homeassistant):
+        app = web.Application()
+        app.router.add_get("/websocket", homeassistant.handle)
+        server = TestServer(app)
+        await server.start_server()
+        servers.append(server)
+        return str(server.make_url("/websocket"))
+
+    yield _serve
+
+    for server in servers:
+        await server.close()
 
 
 @pytest.fixture
