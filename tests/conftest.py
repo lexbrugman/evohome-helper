@@ -66,36 +66,6 @@ def settings():
 _DAY_ORDER = list(DayOfWeek)
 
 
-def _make_switchpoint(time_of_day, heat_setpoint):
-    return {"heat_setpoint": float(heat_setpoint), "time_of_day": time_of_day}
-
-
-def _make_day_schedule(day_of_week_int, switchpoints):
-    return {"day_of_week": _DAY_ORDER[day_of_week_int], "switchpoints": switchpoints}
-
-
-def _uniform_schedule(setpoint=20.0, time_of_day="07:00:00"):
-    # a flat schedule: the same single setpoint every day, so it never increases
-    sp = _make_switchpoint(time_of_day, setpoint)
-    return [_make_day_schedule(d, [sp]) for d in range(7)]
-
-
-def _daily_schedule(*switchpoints):
-    # the same (time_of_day, setpoint) switch points every day
-    sps = [_make_switchpoint(time_of_day, setpoint) for time_of_day, setpoint in switchpoints]
-    return [_make_day_schedule(d, sps) for d in range(7)]
-
-
-def _preheat_schedule(setpoint=20.0, time_of_day="07:00:00"):
-    # heating from time_of_day, a night setback from 23:00: the morning switch point is an increase
-    return _daily_schedule((time_of_day, setpoint), ("23:00:00", 15.0))
-
-
-def _make_fault(fault_type=FaultType.ZON_S_CL):
-    # the real library returns active faults as dicts with a fault_type and a since datetime
-    return {"fault_type": fault_type, "since": datetime(2024, 4, 1, 12, 0, 0)}
-
-
 class FakeZone:
     # not a dataclass: the real evohomeasync2.Zone.schedule is a property that RAISES
     # when the zone has no schedule, so the fake models that rather than exposing a plain list
@@ -115,7 +85,7 @@ class FakeZone:
         self.mode = mode
         self.temperature_status = {"is_available": True, "temperature": 19} if temperature_status is None else temperature_status
         self.setpoint_status = {"setpoint_mode": ZoneMode.FOLLOW_SCHEDULE, "target_heat_temperature": 21} if setpoint_status is None else setpoint_status
-        self._schedule = _uniform_schedule() if schedule is None else schedule
+        self._schedule = EvohomeFactory.uniform_schedule() if schedule is None else schedule
         # the real library raises InvalidScheduleError from get_schedule() for a zone without one
         self.get_schedule = AsyncMock(side_effect=self._do_get_schedule)
 
@@ -190,7 +160,8 @@ class EvohomeFactory:
 
     @staticmethod
     def fault(fault_type=FaultType.ZON_S_CL):
-        return _make_fault(fault_type)
+        # the real library returns active faults as dicts with a fault_type and a since datetime
+        return {"fault_type": fault_type, "since": datetime(2024, 4, 1, 12, 0, 0)}
 
     @staticmethod
     def location(*, name="Home", control_systems=None):
@@ -199,23 +170,27 @@ class EvohomeFactory:
 
     @staticmethod
     def switchpoint(time_of_day, heat_setpoint):
-        return _make_switchpoint(time_of_day, heat_setpoint)
+        return {"heat_setpoint": float(heat_setpoint), "time_of_day": time_of_day}
 
     @staticmethod
     def day_schedule(day_of_week_int, switchpoints):
-        return _make_day_schedule(day_of_week_int, switchpoints)
+        return {"day_of_week": _DAY_ORDER[day_of_week_int], "switchpoints": switchpoints}
 
     @staticmethod
     def uniform_schedule(setpoint=20.0, time_of_day="07:00:00"):
-        return _uniform_schedule(setpoint, time_of_day)
+        # a flat schedule: the same single setpoint every day, so it never increases
+        return EvohomeFactory.daily_schedule((time_of_day, setpoint))
 
     @staticmethod
     def daily_schedule(*switchpoints):
-        return _daily_schedule(*switchpoints)
+        # the same (time_of_day, setpoint) switch points every day
+        sps = [EvohomeFactory.switchpoint(time_of_day, setpoint) for time_of_day, setpoint in switchpoints]
+        return [EvohomeFactory.day_schedule(d, sps) for d in range(7)]
 
     @staticmethod
     def preheat_schedule(setpoint=20.0, time_of_day="07:00:00"):
-        return _preheat_schedule(setpoint, time_of_day)
+        # heating from time_of_day, a night setback from 23:00: the morning switch point is an increase
+        return EvohomeFactory.daily_schedule((time_of_day, setpoint), ("23:00:00", 15.0))
 
     @staticmethod
     def complete_state(*, location_name="Home", zone_mode=ZoneMode.FOLLOW_SCHEDULE, system_mode=SystemMode.AUTO, with_fault=False, setpoint=21, schedule=None):
@@ -224,7 +199,7 @@ class EvohomeFactory:
             mode=zone_mode,
             setpoint_status={"setpoint_mode": zone_mode, "target_heat_temperature": setpoint},
             temperature_status={"is_available": True, "temperature": 20},
-            active_faults=[_make_fault()] if with_fault else [],
+            active_faults=[EvohomeFactory.fault()] if with_fault else [],
             schedule=schedule if schedule is not None else EvohomeFactory.uniform_schedule(setpoint=float(setpoint)),
         )
         control = EvohomeFactory.control_system(mode=system_mode, zones=[zone])
