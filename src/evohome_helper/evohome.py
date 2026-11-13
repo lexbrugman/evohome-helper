@@ -1,7 +1,9 @@
 import logging
 
 from collections.abc import Iterator
+from dataclasses import dataclass
 from datetime import datetime, time, timedelta
+from typing import NamedTuple
 
 from evohomeasync2 import ControlSystem, DayOfWeek, FaultType, Location, SystemMode, Zone, ZoneMode
 from evohomeasync2.exceptions import InvalidScheduleError
@@ -34,6 +36,21 @@ def _usable_zones(control_system: ControlSystem) -> Iterator[Zone]:
     return (zone for zone in control_system.zones if not _zone_data_is_unusable(zone))
 
 
+class SwitchPoint(NamedTuple):
+    at: datetime  # its most recent occurrence
+    setpoint: float
+
+
+@dataclass(frozen=True)
+class ScheduleSummary:
+    """What the schedules of the usable zones say, at one moment."""
+
+    # the *scheduled* setpoint, not the current target: in away mode the target is the
+    # away setpoint, which says nothing about how much heat the zones will want
+    highest_setpoint: float | None  # None: no zone has a usable schedule
+    seconds_since_increase: float | None  # None: no schedule ever raises a setpoint
+
+
 def get_current_time(location: Location) -> datetime:
     # the location's own local time: switch points are local wall-clock times there
     return location.now().replace(microsecond=0)
@@ -49,40 +66,30 @@ def _switchpoint_to_datetime(day_of_week: str, time_of_day: str, now: datetime) 
     return switchpoint_datetime
 
 
-def _get_zone_switch_points(zone: Zone, now: datetime) -> list[tuple[datetime, float]]:
+def _get_zone_switch_points(zone: Zone, now: datetime) -> list[SwitchPoint]:
+    """The zone's switch points of the past week, oldest first, so the last one is the
+    active one; none for a zone without a (valid) schedule."""
     try:
         schedule = zone.schedule
     except InvalidScheduleError:
-        # a zone without a (valid) schedule has no switch points to consider
         return []
 
-    result = []
-    for day_schedule in schedule:
-        for switchpoint in day_schedule["switchpoints"]:
-            switchpoint_datetime = _switchpoint_to_datetime(day_schedule["day_of_week"], switchpoint["time_of_day"], now)
-            result.append((switchpoint_datetime, switchpoint["heat_setpoint"]))
-    result.sort(key=lambda x: x[0])
-    return result
+    switch_points = [
+        SwitchPoint(_switchpoint_to_datetime(day_schedule["day_of_week"], switchpoint["time_of_day"], now), switchpoint["heat_setpoint"])
+        for day_schedule in schedule
+        for switchpoint in day_schedule["switchpoints"]
+    ]
+    return sorted(switch_points, key=lambda switch_point: switch_point.at)
 
 
-def _get_active_setpoint(zone: Zone, now: datetime) -> float | None:
-    switch_points = _get_zone_switch_points(zone, now)
-    if not switch_points:
-        return None
-    # the switch points are sorted ascending by datetime, so the last one is active
-    return switch_points[-1][1]
-
-
-def _get_last_setpoint_increase(zone: Zone, now: datetime) -> tuple[datetime, float] | None:
+def _get_last_setpoint_increase(switch_points: list[SwitchPoint]) -> SwitchPoint | None:
     # a scheduled setpoint increase is where the schedule expects people (waking up,
     # coming home); decreases (setbacks) are not, whatever the temperatures involved
-    switch_points = _get_zone_switch_points(zone, now)
     last_increase = None
-    for index, (switchpoint_datetime, temperature) in enumerate(switch_points):
+    for index, switch_point in enumerate(switch_points):
         # the week is cyclic, so the earliest switch point follows the latest one
-        _, previous_temperature = switch_points[index - 1]
-        if temperature > previous_temperature:
-            last_increase = (switchpoint_datetime, temperature)
+        if switch_point.setpoint > switch_points[index - 1].setpoint:
+            last_increase = switch_point
     return last_increase
 
 
@@ -106,44 +113,36 @@ class EvohomeController:
             HeatingMode.ECO: SystemMode.AUTO_WITH_ECO,
             HeatingMode.AWAY: _AWAY_SYSTEM_MODES[settings.evohome_away_mode],
         }
+        # a mode the user set by hand (anything we never set ourselves) must be left alone
+        self._override_modes = set(SystemMode) - set(self._system_modes.values())
 
     def get_zones(self, location: Location) -> Iterator[Zone]:
         for control_system in get_control_systems(location):
             yield from _usable_zones(control_system)
 
-    def get_seconds_since_scheduled_increase(self, location: Location) -> float | None:
-        """How long ago any zone's schedule last raised its setpoint; None when no
-        schedule ever does."""
+    def get_schedule_summary(self, location: Location) -> ScheduleSummary:
+        # one reading of the clock, and each zone's switch points worked out once
         now = get_current_time(location)
-        last_increase_start = None
+        active_setpoints = []
+        increase_times = []
 
         for zone in self.get_zones(location):
-            increase = _get_last_setpoint_increase(zone, now)
+            switch_points = _get_zone_switch_points(zone, now)
+            if switch_points:
+                active_setpoints.append(switch_points[-1].setpoint)
+
+            increase = _get_last_setpoint_increase(switch_points)
             if increase is None:
                 logger.debug("no scheduled setpoint increase found for %s", zone.name)
                 continue
 
-            increase_start, increase_temperature = increase
-            logger.debug(
-                "last scheduled setpoint increase for %s was at: %s (%s degrees celsius)",
-                zone.name,
-                increase_start,
-                increase_temperature,
-            )
+            logger.debug("last scheduled setpoint increase for %s was at: %s (%s degrees celsius)", zone.name, increase.at, increase.setpoint)
+            increase_times.append(increase.at)
 
-            if last_increase_start is None or increase_start > last_increase_start:
-                last_increase_start = increase_start
-
-        if last_increase_start is None:
-            return None
-        return (now - last_increase_start).total_seconds()
-
-    def get_highest_scheduled_setpoint(self, location: Location) -> float | None:
-        # the *scheduled* setpoint, not the current target: in away mode the target is the
-        # away setpoint, which says nothing about how much heat the zones will want
-        now = get_current_time(location)
-        active_setpoints = (_get_active_setpoint(zone, now) for zone in self.get_zones(location))
-        return max((setpoint for setpoint in active_setpoints if setpoint is not None), default=None)
+        return ScheduleSummary(
+            highest_setpoint=max(active_setpoints, default=None),
+            seconds_since_increase=(now - max(increase_times)).total_seconds() if increase_times else None,
+        )
 
     async def apply(self, mode: HeatingMode, location: Location) -> None:
         new_mode = self._system_modes[mode]
@@ -158,12 +157,8 @@ class EvohomeController:
             logger.info("changing thermostat (%s) mode to '%s'", control_system.id, new_mode)
             await self._evohome.set_system_mode(control_system, new_mode)
 
-    def _get_override_modes(self) -> set[SystemMode]:
-        # a mode the user set by hand (anything we never set ourselves) must be left alone
-        return set(SystemMode) - set(self._system_modes.values())
-
     def _is_override_enabled(self, control_system: ControlSystem) -> bool:
-        if control_system.mode in self._get_override_modes():
+        if control_system.mode in self._override_modes:
             return True
 
         # a zone whose data is unusable cannot report a meaningful mode either

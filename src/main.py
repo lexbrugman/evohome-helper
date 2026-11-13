@@ -73,11 +73,12 @@ class Application:
                 setpoint_status["setpoint_mode"],
             )
 
+        schedule = self._controller.get_schedule_summary(location)
         situation = Situation(
             someone_home=self._presence.is_someone_home(),
             seconds_since_last_departure=self._presence.seconds_since_last_departure(),
-            seconds_since_scheduled_increase=self._controller.get_seconds_since_scheduled_increase(location),
-            highest_scheduled_setpoint=self._controller.get_highest_scheduled_setpoint(location),
+            seconds_since_scheduled_increase=schedule.seconds_since_increase,
+            highest_scheduled_setpoint=schedule.highest_setpoint,
             # fetched before deciding so the policy stays free of I/O; only auto-eco uses
             # it, so this costs one local Home Assistant call per cycle that the away and
             # unchanged decisions ignore (and, during a weather outage, up to the client's

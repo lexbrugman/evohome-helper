@@ -19,10 +19,10 @@ def test_factory_complete_state_supports_full_state_setup(evohome_factory):
     assert [fault["fault_type"] for fault in state.zone.active_faults] == [FaultType.ZON_S_CL]
 
 
-def test_get_override_modes_excludes_expected_modes(controller_factory, settings):
+def test_override_modes_exclude_the_modes_the_controller_sets(controller_factory, settings):
     controller = controller_factory(config=replace(settings, evohome_away_mode=AwayMode.AWAY))
 
-    modes = controller._get_override_modes()
+    modes = controller._override_modes
 
     assert SystemMode.AUTO not in modes
     assert SystemMode.AUTO_WITH_ECO not in modes
@@ -94,43 +94,43 @@ async def test_apply_translates_away_into_the_configured_mode(controller_factory
     state.control_system.set_mode.assert_awaited_once_with(system_mode)
 
 
-def test_get_active_setpoint_picks_most_recent_switchpoint(evohome_factory):
+def test_get_zone_switch_points_ends_with_the_active_one(evohome_factory):
     sp_morning = evohome_factory.switchpoint("07:00:00", 21)
     sp_noon = evohome_factory.switchpoint("12:00:00", 16)
     daily = [evohome_factory.day_schedule(d, [sp_morning, sp_noon]) for d in range(7)]
     state = evohome_factory.complete_state(schedule=daily)
 
-    assert evohome._get_active_setpoint(state.zone, datetime(2024, 4, 10, 11, 0, 0)) == 21.0
-    assert evohome._get_active_setpoint(state.zone, datetime(2024, 4, 10, 13, 0, 0)) == 16.0
+    assert evohome._get_zone_switch_points(state.zone, datetime(2024, 4, 10, 11, 0, 0))[-1] == (datetime(2024, 4, 10, 7, 0, 0), 21.0)
+    assert evohome._get_zone_switch_points(state.zone, datetime(2024, 4, 10, 13, 0, 0))[-1] == (datetime(2024, 4, 10, 12, 0, 0), 16.0)
 
 
-def test_get_highest_scheduled_setpoint_takes_max_across_zones(controller_factory, evohome_factory):
+def test_schedule_summary_highest_setpoint_takes_max_across_zones(controller_factory, evohome_factory):
     warm_zone = evohome_factory.zone(name="Living", schedule=evohome_factory.uniform_schedule(setpoint=21))
     cool_zone = evohome_factory.zone(name="Hall", schedule=evohome_factory.uniform_schedule(setpoint=16))
     control_system = evohome_factory.control_system(zones=[cool_zone, warm_zone])
     location = evohome_factory.location(control_systems=[control_system])
 
     with freeze_time("2024-04-10 08:00:00"):
-        assert controller_factory().get_highest_scheduled_setpoint(location) == 21.0
+        assert controller_factory().get_schedule_summary(location).highest_setpoint == 21.0
 
 
-def test_seconds_since_scheduled_increase(controller_factory, evohome_factory):
+def test_schedule_summary_seconds_since_increase(controller_factory, evohome_factory):
     state = evohome_factory.complete_state(schedule=evohome_factory.preheat_schedule(20, "11:55:00"))
     controller = controller_factory()
 
     with freeze_time("2024-04-07 12:00:00"):
-        assert controller.get_seconds_since_scheduled_increase(state.location) == 5 * 60
+        assert controller.get_schedule_summary(state.location).seconds_since_increase == 5 * 60
 
 
-def test_seconds_since_scheduled_increase_keeps_counting(controller_factory, evohome_factory):
+def test_schedule_summary_seconds_since_increase_keeps_counting(controller_factory, evohome_factory):
     state = evohome_factory.complete_state(schedule=evohome_factory.preheat_schedule(20, "06:00:00"))
     controller = controller_factory()
 
     with freeze_time("2024-04-07 12:00:00"):
-        assert controller.get_seconds_since_scheduled_increase(state.location) == 6 * 3600
+        assert controller.get_schedule_summary(state.location).seconds_since_increase == 6 * 3600
 
 
-def test_seconds_since_scheduled_increase_takes_the_most_recent_across_zones(controller_factory, evohome_factory):
+def test_schedule_summary_seconds_since_increase_takes_the_most_recent_across_zones(controller_factory, evohome_factory):
     early_zone = evohome_factory.zone(name="Hall", schedule=evohome_factory.preheat_schedule(19, "06:00:00"))
     late_zone = evohome_factory.zone(name="Living", schedule=evohome_factory.preheat_schedule(21, "11:55:00"))
     flat_zone = evohome_factory.zone(name="Attic")
@@ -138,19 +138,19 @@ def test_seconds_since_scheduled_increase_takes_the_most_recent_across_zones(con
     location = evohome_factory.location(control_systems=[control_system])
 
     with freeze_time("2024-04-07 12:00:00"):
-        assert controller_factory().get_seconds_since_scheduled_increase(location) == 5 * 60
+        assert controller_factory().get_schedule_summary(location).seconds_since_increase == 5 * 60
 
 
-def test_seconds_since_scheduled_increase_is_none_for_a_flat_schedule(controller_factory, evohome_factory):
+def test_schedule_summary_seconds_since_increase_is_none_for_a_flat_schedule(controller_factory, evohome_factory):
     # a single setpoint all week never increases, so it never expects anyone
     state = evohome_factory.complete_state(schedule=evohome_factory.uniform_schedule(20, "11:55:00"))
     controller = controller_factory()
 
     with freeze_time("2024-04-07 12:00:00"):
-        assert controller.get_seconds_since_scheduled_increase(state.location) is None
+        assert controller.get_schedule_summary(state.location).seconds_since_increase is None
 
 
-def test_seconds_since_scheduled_increase_ignores_setpoint_decreases(controller_factory, evohome_factory):
+def test_schedule_summary_seconds_since_increase_ignores_setpoint_decreases(controller_factory, evohome_factory):
     """A typical day: up at 07:00, down while out at 09:00, up for coming home at 17:00,
     down for the night at 23:00. Only the increases count."""
     state = evohome_factory.complete_state(
@@ -159,13 +159,13 @@ def test_seconds_since_scheduled_increase_ignores_setpoint_decreases(controller_
     controller = controller_factory()
 
     with freeze_time("2024-04-10 07:10:00"):
-        assert controller.get_seconds_since_scheduled_increase(state.location) == 10 * 60
+        assert controller.get_schedule_summary(state.location).seconds_since_increase == 10 * 60
     with freeze_time("2024-04-10 09:10:00"):  # the step down to 18 must not heat an empty house
-        assert controller.get_seconds_since_scheduled_increase(state.location) == 130 * 60
+        assert controller.get_schedule_summary(state.location).seconds_since_increase == 130 * 60
     with freeze_time("2024-04-10 17:10:00"):
-        assert controller.get_seconds_since_scheduled_increase(state.location) == 10 * 60
+        assert controller.get_schedule_summary(state.location).seconds_since_increase == 10 * 60
     with freeze_time("2024-04-10 23:10:00"):
-        assert controller.get_seconds_since_scheduled_increase(state.location) == 370 * 60
+        assert controller.get_schedule_summary(state.location).seconds_since_increase == 370 * 60
 
 
 def test_get_zone_switch_points_flattens_and_sorts(evohome_factory):
@@ -204,18 +204,18 @@ def test_get_zone_switch_points_week_boundary_sunday_to_monday(evohome_factory):
     assert sunday_sps[0][0] == datetime(2024, 4, 7, 7, 0, 0)  # last Sunday, not next
 
 
-def test_get_active_setpoint_returns_none_when_zone_has_no_schedule(evohome_factory):
+def test_get_zone_switch_points_is_empty_when_zone_has_no_schedule(evohome_factory):
     state = evohome_factory.complete_state(schedule=[])
 
     now = datetime(2024, 4, 10, 8, 0, 0)
-    assert evohome._get_active_setpoint(state.zone, now) is None
+    assert evohome._get_zone_switch_points(state.zone, now) == []
 
 
-def test_get_highest_scheduled_setpoint_returns_none_when_no_valid_setpoints(controller_factory, evohome_factory):
+def test_schedule_summary_highest_setpoint_is_none_without_a_schedule(controller_factory, evohome_factory):
     state = evohome_factory.complete_state(schedule=[])
 
     with freeze_time("2024-04-10 08:00:00"):
-        assert controller_factory().get_highest_scheduled_setpoint(state.location) is None
+        assert controller_factory().get_schedule_summary(state.location).highest_setpoint is None
 
 
 def test_get_last_setpoint_increase_survives_a_following_decrease(evohome_factory):
@@ -223,7 +223,7 @@ def test_get_last_setpoint_increase_survives_a_following_decrease(evohome_factor
     state = evohome_factory.complete_state(schedule=evohome_factory.daily_schedule(("11:55:00", 20), ("12:05:00", 5)))
 
     now = datetime(2024, 4, 7, 12, 10, 0)  # Sunday, inside the setback
-    assert evohome._get_last_setpoint_increase(state.zone, now) == (datetime(2024, 4, 7, 11, 55, 0), 20.0)
+    assert evohome._get_last_setpoint_increase(evohome._get_zone_switch_points(state.zone, now)) == (datetime(2024, 4, 7, 11, 55, 0), 20.0)
 
 
 def test_get_last_setpoint_increase_wraps_around_the_week(evohome_factory):
@@ -234,22 +234,22 @@ def test_get_last_setpoint_increase_wraps_around_the_week(evohome_factory):
     state = evohome_factory.complete_state(schedule=[monday, *others])
 
     now = datetime(2024, 4, 8, 7, 10, 0)  # Monday 2024-04-08
-    assert evohome._get_last_setpoint_increase(state.zone, now) == (datetime(2024, 4, 8, 7, 0, 0), 21.0)
+    assert evohome._get_last_setpoint_increase(evohome._get_zone_switch_points(state.zone, now)) == (datetime(2024, 4, 8, 7, 0, 0), 21.0)
 
 
 def test_get_last_setpoint_increase_returns_none_for_a_flat_schedule(evohome_factory):
     state = evohome_factory.complete_state(schedule=evohome_factory.uniform_schedule(15, "11:55:00"))
 
     now = datetime(2024, 4, 7, 12, 10, 0)
-    assert evohome._get_last_setpoint_increase(state.zone, now) is None
+    assert evohome._get_last_setpoint_increase(evohome._get_zone_switch_points(state.zone, now)) is None
 
 
-def test_seconds_since_scheduled_increase_counts_on_through_a_following_decrease(controller_factory, evohome_factory):
+def test_schedule_summary_seconds_since_increase_counts_on_through_a_following_decrease(controller_factory, evohome_factory):
     state = evohome_factory.complete_state(schedule=evohome_factory.daily_schedule(("11:55:00", 20), ("12:05:00", 5)))
     controller = controller_factory()
 
     with freeze_time("2024-04-07 12:09:00"):  # in the setback, 14 minutes after the increase
-        assert controller.get_seconds_since_scheduled_increase(state.location) == 14 * 60
+        assert controller.get_schedule_summary(state.location).seconds_since_increase == 14 * 60
 
 
 def test_get_zones_filters_zones_with_unusable_data(controller_factory, evohome_factory):
