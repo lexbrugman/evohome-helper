@@ -100,7 +100,6 @@ class EvohomeController:
 
     def __init__(self, evohome_service: EvohomeService, settings: Settings):
         self._evohome = evohome_service
-        self._settings = settings
         # the vendor's mode for each decision; any other mode is one the user set by hand
         self._system_modes = {
             HeatingMode.NORMAL: SystemMode.AUTO,
@@ -112,10 +111,11 @@ class EvohomeController:
         for control_system in get_control_systems(location):
             yield from _usable_zones(control_system)
 
-    def is_in_preheat_window(self, location: Location) -> bool:
-        """Whether any zone's schedule raised its setpoint recently: the house is then kept
-        heating for a while even if no one is detected yet, so it is warm on arrival."""
+    def get_seconds_since_scheduled_increase(self, location: Location) -> float | None:
+        """How long ago any zone's schedule last raised its setpoint; None when no
+        schedule ever does."""
         now = get_current_time(location)
+        last_increase_start = None
 
         for zone in self.get_zones(location):
             increase = _get_last_setpoint_increase(zone, now)
@@ -131,11 +131,12 @@ class EvohomeController:
                 increase_temperature,
             )
 
-            since_increase = now - increase_start
-            if since_increase.total_seconds() < self._settings.presence_heating_schedule_grace_time:
-                return True
+            if last_increase_start is None or increase_start > last_increase_start:
+                last_increase_start = increase_start
 
-        return False
+        if last_increase_start is None:
+            return None
+        return (now - last_increase_start).total_seconds()
 
     def get_highest_scheduled_setpoint(self, location: Location) -> float | None:
         # the *scheduled* setpoint, not the current target: in away mode the target is the

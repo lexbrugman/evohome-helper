@@ -75,9 +75,8 @@ class Application:
 
         situation = Situation(
             someone_home=self._presence.is_someone_home(),
-            someone_home_recently=self._presence.was_someone_home_recently(),
-            someone_left_just_now=self._presence.did_someone_leave_just_now(),
-            in_preheat_window=self._controller.is_in_preheat_window(location),
+            seconds_since_last_departure=self._presence.seconds_since_last_departure(),
+            seconds_since_scheduled_increase=self._controller.get_seconds_since_scheduled_increase(location),
             highest_scheduled_setpoint=self._controller.get_highest_scheduled_setpoint(location),
             # fetched before deciding so the policy stays free of I/O; only auto-eco uses
             # it, so this costs one local Home Assistant call per cycle that the away and

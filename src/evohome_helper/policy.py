@@ -18,9 +18,8 @@ class HeatingMode(Enum):
 @dataclass(frozen=True)
 class Situation:
     someone_home: bool | None  # None: presence could not be determined
-    someone_home_recently: bool
-    someone_left_just_now: bool
-    in_preheat_window: bool
+    seconds_since_last_departure: float | None  # None: no departure is known
+    seconds_since_scheduled_increase: float | None  # None: no schedule ever raises a setpoint
     highest_scheduled_setpoint: float | None  # None: no zone has a usable schedule
     outside_temperature: float | None  # None: unknown, or auto-eco disabled
 
@@ -39,16 +38,26 @@ def decide(situation: Situation, settings: Settings) -> Decision:
     if situation.someone_home:
         return _normal(situation, settings, "someone is home")
 
-    if situation.someone_home_recently and situation.in_preheat_window:
+    # a scheduled setpoint increase is where the schedule expects people (waking up, coming
+    # home), so the home is kept heating for a while to be warm on arrival -- but only a
+    # home in daily use, not one that has been empty for days (holiday)
+    in_daily_use = _within(situation.seconds_since_last_departure, settings.presence_last_home_grace_time)
+    in_preheat_window = _within(situation.seconds_since_scheduled_increase, settings.presence_heating_schedule_grace_time)
+    if in_daily_use and in_preheat_window:
         return _normal(situation, settings, "no one is home, but pre-heating after a scheduled setpoint increase as the home is in daily use")
 
-    if situation.someone_left_just_now:
+    if _within(situation.seconds_since_last_departure, settings.presence_away_delay):
         # a tracker that briefly drops out must not cost a switch to away and one back;
         # unchanged rather than normal, so a restart during the delay does not undo an
         # away mode that is already set
         return Decision(None, "no one is home, but someone left only just now; leaving the thermostat unchanged")
 
     return Decision(HeatingMode.AWAY, "no one is home")
+
+
+def _within(elapsed: float | None, window: float) -> bool:
+    # an event that never happened (or whose time is unknown) is in no window
+    return elapsed is not None and elapsed < window
 
 
 def _normal(situation: Situation, settings: Settings, reason: str) -> Decision:

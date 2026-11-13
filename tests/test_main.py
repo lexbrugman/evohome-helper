@@ -25,12 +25,16 @@ def _preheat_schedule(evohome_factory, *, in_window):
     return evohome_factory.preheat_schedule(20, "06:00:00")
 
 
-def _fake_presence(*, someone_home=False, recently_home=False, just_left=False, known=True):
+# how long ago the last person left: within the day that makes a home "in daily use", or not
+AN_HOUR_AGO = 3600
+A_WEEK_AGO = 7 * 86400
+
+
+def _fake_presence(*, someone_home=False, since_departure=A_WEEK_AGO, known=True):
     presence = Mock()
     presence.refresh = AsyncMock()
     presence.is_someone_home = Mock(return_value=someone_home if known else None)
-    presence.was_someone_home_recently = Mock(return_value=recently_home)
-    presence.did_someone_leave_just_now = Mock(return_value=just_left)
+    presence.seconds_since_last_departure = Mock(return_value=since_departure)
     return presence
 
 
@@ -58,14 +62,14 @@ def _build_app(settings, service, presence, outside_temp=10):
 
 
 @pytest.mark.parametrize(
-    "someone_home,recently_home,preheat_window,start_mode,expected_mode,clock",
+    "someone_home,since_departure,preheat_window,start_mode,expected_mode,clock",
     [
-        (True, True, False, SystemMode.AUTO_WITH_ECO, SystemMode.AUTO, "2024-04-10 08:00:00"),
-        (False, True, True, SystemMode.AUTO_WITH_ECO, SystemMode.AUTO, "2024-04-07 08:00:00"),
-        (False, False, False, SystemMode.AUTO, SystemMode.AWAY, "2024-04-10 08:00:00"),
+        (True, AN_HOUR_AGO, False, SystemMode.AUTO_WITH_ECO, SystemMode.AUTO, "2024-04-10 08:00:00"),
+        (False, AN_HOUR_AGO, True, SystemMode.AUTO_WITH_ECO, SystemMode.AUTO, "2024-04-07 08:00:00"),
+        (False, A_WEEK_AGO, False, SystemMode.AUTO, SystemMode.AWAY, "2024-04-10 08:00:00"),
         # exactly one condition active must still mean away: both conjuncts are load-bearing
-        (False, True, False, SystemMode.AUTO, SystemMode.AWAY, "2024-04-10 08:00:00"),
-        (False, False, True, SystemMode.AUTO, SystemMode.AWAY, "2024-04-07 08:00:00"),
+        (False, AN_HOUR_AGO, False, SystemMode.AUTO, SystemMode.AWAY, "2024-04-10 08:00:00"),
+        (False, A_WEEK_AGO, True, SystemMode.AUTO, SystemMode.AWAY, "2024-04-07 08:00:00"),
     ],
 )
 async def test_set_thermostat_mode_public_scenarios(
@@ -73,7 +77,7 @@ async def test_set_thermostat_mode_public_scenarios(
     evohome_factory,
     settings,
     someone_home,
-    recently_home,
+    since_departure,
     preheat_window,
     start_mode,
     expected_mode,
@@ -81,7 +85,7 @@ async def test_set_thermostat_mode_public_scenarios(
 ):
     state = evohome_factory.complete_state(system_mode=start_mode, schedule=_preheat_schedule(evohome_factory, in_window=preheat_window))
     service = make_service(locations=[state.location])
-    presence = _fake_presence(someone_home=someone_home, recently_home=recently_home, known=True)
+    presence = _fake_presence(someone_home=someone_home, since_departure=since_departure)
     app = _build_app(settings, service, presence)
 
     with freeze_time(clock):
@@ -99,7 +103,7 @@ async def test_set_thermostat_mode_multiple_zones_keeps_normal(make_service, evo
     control_system = evohome_factory.control_system(mode=SystemMode.AUTO_WITH_ECO, zones=[early_zone, preheat_zone])
     location = evohome_factory.location(control_systems=[control_system])
     service = make_service(locations=[location])
-    presence = _fake_presence(someone_home=False, recently_home=True, known=True)
+    presence = _fake_presence(someone_home=False, since_departure=AN_HOUR_AGO)
     app = _build_app(settings, service, presence)
 
     with freeze_time("2024-04-07 08:00:00"):
@@ -138,7 +142,7 @@ async def test_thermostat_unchanged_when_presence_unknown(make_service, evohome_
 async def test_thermostat_unchanged_when_someone_left_just_now(make_service, evohome_factory, settings):
     state = evohome_factory.complete_state(system_mode=SystemMode.AUTO)
     service = make_service(locations=[state.location])
-    presence = _fake_presence(someone_home=False, recently_home=True, just_left=True)
+    presence = _fake_presence(someone_home=False, since_departure=60)
     app = _build_app(settings, service, presence)
 
     with freeze_time("2024-04-10 08:00:00"):

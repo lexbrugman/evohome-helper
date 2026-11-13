@@ -65,23 +65,11 @@ class PresenceTracker:
             return None
         return any(home.present for home in records)
 
-    def was_someone_home_recently(self) -> bool:
-        """Whether anyone left home within the configured window: a home in daily use
-        gets pre-heated for the schedule, a home empty for days (holiday) does not."""
-        since_departure = self._seconds_since_last_departure()
-        return since_departure is not None and since_departure <= self._settings.presence_last_home_grace_time
-
-    def did_someone_leave_just_now(self) -> bool:
-        """Whether anyone left home within the away delay: the switch to away waits it
-        out, so a tracker that briefly drops out does not turn the heating down."""
-        # an unknown departure time means no delay: never assume someone is still around
-        since_departure = self._seconds_since_last_departure()
-        return since_departure is not None and since_departure < self._settings.presence_away_delay
-
-    def _seconds_since_last_departure(self) -> float | None:
-        # computed at query time so that a reading that cannot be refreshed ages out of
-        # a window instead of staying in it; UTC because it is compared with Home
-        # Assistant's aware timestamps, for which any zone would do
+    def seconds_since_last_departure(self) -> float | None:
+        """How long ago anyone last left home; None when no departure is known."""
+        # computed at query time so that a reading that cannot be refreshed keeps ageing
+        # instead of staying recent; UTC because it is compared with Home Assistant's
+        # aware timestamps, for which any zone would do
         now = datetime.now(UTC)
         return min(
             ((now - home.left_at).total_seconds() for home in self._home_records() if home.left_at is not None),
