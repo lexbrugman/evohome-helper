@@ -125,7 +125,7 @@ class Application:
     async def run(self) -> None:
         try:
             with _shutdown_signals() as shutdown_event:
-                async with _in_background(self._arrival_listener.run(self._someone_arrived.set)):
+                async with _in_background(self._arrival_listener.run(self._on_arrival)):
                     while not shutdown_event.is_set():
                         # cleared before the cycle reads presence, not after: an arrival
                         # during the cycle may have been missed by it and must start another one
@@ -138,6 +138,12 @@ class Application:
 
             await self._homeassistant.close()
             await self._evohome_service.close()
+
+    def _on_arrival(self) -> None:
+        # an arrival at a home that already had someone in it changes nothing, so it is
+        # not worth a cycle (and its vendor API call); the next regular one will do
+        if not self._presence.is_someone_home():
+            self._someone_arrived.set()
 
     async def _run_cycle(self) -> None:
         """Run one cycle. Its failure is logged and survived, so the loop carries on --

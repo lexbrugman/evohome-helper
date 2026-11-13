@@ -176,14 +176,15 @@ async def test_set_thermostat_mode_skips_the_weather_when_auto_eco_is_disabled(m
     state.control_system.set_mode.assert_awaited_once_with(SystemMode.AUTO)
 
 
-def _minimal_app(settings, *, interval, arrivals=0):
+def _minimal_app(settings, *, interval, arrivals=0, someone_home=False):
     service = Mock()
     service.close = AsyncMock()
     service.reset = AsyncMock()
     homeassistant = Mock()
     homeassistant.close = AsyncMock()
+    presence = _fake_presence(someone_home=someone_home)
     listener = _fake_arrival_listener(arrivals=arrivals)
-    return main.Application(replace(settings, interval=interval), service, Mock(), Mock(), Mock(), homeassistant, listener)
+    return main.Application(replace(settings, interval=interval), service, Mock(), presence, Mock(), homeassistant, listener)
 
 
 async def _run_cycles(app, outcomes):
@@ -223,7 +224,20 @@ async def test_run_starts_another_cycle_for_an_arrival_during_a_cycle(settings, 
     monkeypatch.setattr(main, "MINIMUM_CYCLE_GAP", 0.01)
     app = _minimal_app(settings, interval=60)
 
-    await _run_cycles(app, [app._someone_arrived.set, None])
+    await _run_cycles(app, [app._on_arrival, None])
+
+
+@pytest.mark.parametrize("known", [True, False], ids=["someone home", "presence unknown"])
+async def test_run_starts_a_cycle_early_only_for_an_arrival_at_an_empty_home(settings, monkeypatch, known):
+    # with someone already home the arrival changes nothing, so it must not cost a
+    # vendor API call; an unknown presence is not "someone home"
+    monkeypatch.setattr(main, "MINIMUM_CYCLE_GAP", 0.01)
+    app = _minimal_app(settings, interval=0.2, arrivals=1, someone_home=True)
+    app._presence.is_someone_home.return_value = True if known else None
+
+    elapsed = await _run_cycles(app, [None, None])
+
+    assert (elapsed >= 0.2) is known
 
 
 async def test_run_keeps_the_minimum_gap_between_cycles_when_someone_arrives(settings, monkeypatch):
